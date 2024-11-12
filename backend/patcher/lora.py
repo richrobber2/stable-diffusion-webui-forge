@@ -310,7 +310,7 @@ class LoraLoader:
     def refresh(self, lora_patches, offload_device=None):
         if offload_device is None:
             offload_device = torch.device('cpu')
-            
+
         hashes = str(list(lora_patches.keys()))
 
         if hashes == self.loaded_hash:
@@ -354,8 +354,8 @@ class LoraLoader:
             try:
                 parent_layer, child_key, weight = utils.get_attr_with_parent(self.model, key)
                 assert isinstance(weight, torch.nn.Parameter)
-            except:
-                raise ValueError(f"Wrong LoRA Key: {key}")
+            except Exception:
+                raise ValueError(f"Wrong LoRA Key: {key}") from None
 
             if online_mode:
                 if not hasattr(parent_layer, 'forge_online_loras'):
@@ -385,7 +385,7 @@ class LoraLoader:
 
             try:
                 weight = merge_lora_to_weight(current_patches, weight, key, computation_dtype=torch.float32)
-            except:
+            except RuntimeError:
                 print('Patching LoRA weights out of memory. Retrying by offloading models.')
                 set_parameter_devices(self.model, parameter_devices={k: offload_device for k in parameter_devices.keys()})
                 memory_management.soft_empty_cache()
