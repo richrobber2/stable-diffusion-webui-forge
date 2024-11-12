@@ -60,14 +60,14 @@ try:
 
     if torch.xpu.is_available():
         xpu_available = True
-except:
+except:  # noqa: E722
     pass
 
 try:
     if torch.backends.mps.is_available():
         cpu_state = CPUState.MPS
         import torch.mps
-except:
+except:  # noqa: E722
     pass
 
 if args.always_cpu:
@@ -560,11 +560,24 @@ def unload_model_clones(model):
 
 
 def free_memory(memory_required, device, keep_loaded=[], free_all=False):
+    # Add dynamic safety margins based on VRAM state
+    if vram_state == VRAMState.LOW_VRAM:
+        safety_margin = 1.2  # 20% safety margin for low VRAM
+    elif vram_state == VRAMState.NO_VRAM:
+        safety_margin = 1.3  # 30% safety margin for no VRAM
+    else:
+        safety_margin = 1.1  # 10% safety margin for normal/high VRAM
+
+    # Round up to nearest VRAM block size
+    VRAM_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB blocks
+    adjusted_memory = (((memory_required * safety_margin) + VRAM_BLOCK_SIZE - 1)
+                      // VRAM_BLOCK_SIZE * VRAM_BLOCK_SIZE) if not free_all else float('inf')
+
     if free_all:
         memory_required = 1e30
         print(f"[Unload] Trying to free all memory for {device} with {len(keep_loaded)} models keep loaded ... ", end="")
     else:
-        print(f"[Unload] Trying to free {memory_required / (1024 * 1024):.2f} MB for {device} with {len(keep_loaded)} models keep loaded ... ", end="")
+        print(f"[Unload] Trying to free {adjusted_memory / (1024 * 1024):.2f} MB for {device} with {len(keep_loaded)} models keep loaded ... ", end="")
 
     offload_everything = ALWAYS_VRAM_OFFLOAD or vram_state == VRAMState.NO_VRAM
     unloaded_model = False
@@ -572,7 +585,7 @@ def free_memory(memory_required, device, keep_loaded=[], free_all=False):
         if not offload_everything:
             free_memory = get_free_memory(device)
             print(f"Current free memory is {free_memory / (1024 * 1024):.2f} MB ... ", end="")
-            if free_memory > memory_required:
+            if free_memory > adjusted_memory:
                 break
         shift_model = current_loaded_models[i]
         if shift_model.device == device:
@@ -596,14 +609,42 @@ def free_memory(memory_required, device, keep_loaded=[], free_all=False):
 
 
 def compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, inference_memory):
-    maximum_memory_available = current_free_mem - inference_memory
+    # Account for VRAM block allocation sizes (typically 1MB or 2MB blocks)
+    VRAM_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB blocks
 
+    # Calculate available memory accounting for fragmentation
+    fragmentation_factor = 0.85  # Assume 15% fragmentation overhead
+    maximum_memory_available = (current_free_mem - inference_memory) * fragmentation_factor
+
+    # Round down to nearest block size to prevent fragmentation
+    maximum_memory_available = (maximum_memory_available // VRAM_BLOCK_SIZE) * VRAM_BLOCK_SIZE
+
+    # Use golden ratio for better memory distribution
+    golden_ratio = (1 + 5 ** 0.5) / 2
     suggestion = max(
-        maximum_memory_available / 1.3,
-        maximum_memory_available - 1024 * 1024 * 1024 * 1.25
+        maximum_memory_available / golden_ratio,
+        maximum_memory_available - (1024 * 1024 * 1024)
     )
 
+    # Round down to nearest block size again
+    suggestion = (suggestion // VRAM_BLOCK_SIZE) * VRAM_BLOCK_SIZE
+
     return int(max(0, suggestion))
+
+
+def total_memory_required(models_to_load):
+    # More accurate memory requirement calculation
+    memory_map = {}
+    for loaded_model in models_to_load:
+        device = loaded_model.device
+        inclusive_mem = loaded_model.inclusive_memory
+        exclusive_mem = loaded_model.exclusive_memory
+
+        # Improved memory estimation formula
+        required_memory = exclusive_mem + (inclusive_mem * 0.3)  # Reduced from 0.25 to account for memory fragmentation
+        memory_map[device] = memory_map.get(device, 0) + required_memory
+
+    return memory_map
 
 
 def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
@@ -626,7 +667,7 @@ def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
             models_to_load.append(loaded_model)
 
     if len(models_to_load) == 0:
-        devs = set(map(lambda a: a.device, models_already_loaded))
+        devs = {model.device for model in models_already_loaded}
         for d in devs:
             if d != torch.device("cpu"):
                 free_memory(memory_to_free, d, models_already_loaded)
@@ -1010,22 +1051,38 @@ def get_free_memory(dev=None, torch_free_too=False):
         mem_free_torch = mem_free_total
     else:
         if directml_enabled:
-            mem_free_total = 1024 * 1024 * 1024
+            # Use more realistic memory estimation for DirectML
+            mem_free_total = min(1024 * 1024 * 1024, psutil.virtual_memory().available * 0.8)
             mem_free_torch = mem_free_total
         elif is_intel_xpu():
             stats = torch.xpu.memory_stats(dev)
             mem_active = stats['active_bytes.all.current']
             mem_reserved = stats['reserved_bytes.all.current']
-            mem_free_torch = mem_reserved - mem_active
-            mem_free_xpu = torch.xpu.get_device_properties(dev).total_memory - mem_reserved
+            
+            # Dynamic fragmentation factor based on memory pressure
+            memory_pressure = mem_active / mem_reserved if mem_reserved > 0 else 0
+            fragmentation_factor = max(0.7, 0.95 - (memory_pressure * 0.15))
+            
+            mem_free_torch = (mem_reserved - mem_active) * fragmentation_factor
+            mem_free_xpu = (torch.xpu.get_device_properties(dev).total_memory - mem_reserved) * fragmentation_factor
             mem_free_total = mem_free_xpu + mem_free_torch
         else:
+            # Similar improvement for CUDA memory calculation
             stats = torch.cuda.memory_stats(dev)
             mem_active = stats['active_bytes.all.current']
             mem_reserved = stats['reserved_bytes.all.current']
             mem_free_cuda, _ = torch.cuda.mem_get_info(dev)
-            mem_free_torch = mem_reserved - mem_active
-            mem_free_total = mem_free_cuda + mem_free_torch
+            
+            # Dynamic fragmentation factor based on memory pressure
+            memory_pressure = mem_active / mem_reserved if mem_reserved > 0 else 0
+            fragmentation_factor = max(0.7, 0.95 - (memory_pressure * 0.15))
+            
+            # Account for CUDA block allocation granularity
+            CUDA_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB blocks
+            mem_free_torch = ((mem_reserved - mem_active) * fragmentation_factor 
+                             // CUDA_BLOCK_SIZE * CUDA_BLOCK_SIZE)
+            mem_free_total = ((mem_free_cuda + mem_free_torch) * fragmentation_factor 
+                             // CUDA_BLOCK_SIZE * CUDA_BLOCK_SIZE)
 
     if torch_free_too:
         return (mem_free_total, mem_free_torch)
