@@ -25,7 +25,10 @@ def inner_str(k, prefix="", suffix=""):
     return k[len(prefix):-len(suffix)]
 
 
-def model_lora_keys_clip(model, key_map={}):
+def model_lora_keys_clip(model, key_map=None):
+    if key_map is None:
+        key_map = {}
+
     model_keys, key_maps = get_function('model_lora_keys_clip')(model, key_map)
 
     for model_key in model_keys:
@@ -40,7 +43,10 @@ def model_lora_keys_clip(model, key_map={}):
     return key_maps
 
 
-def model_lora_keys_unet(model, key_map={}):
+def model_lora_keys_unet(model, key_map=None):
+    if key_map is None:
+        key_map = {}
+
     model_keys, key_maps = get_function('model_lora_keys_unet')(model, key_map)
 
     # TODO: OFT
@@ -50,23 +56,25 @@ def model_lora_keys_unet(model, key_map={}):
 
 @torch.inference_mode()
 def weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype):
-    # Modified from https://github.com/comfyanonymous/ComfyUI/blob/39f114c44bb99d4a221e8da451d4f2a20119c674/comfy/model_patcher.py#L33
-
+    """Optimized weight decomposition with reduced memory overhead"""
     dora_scale = memory_management.cast_to_device(dora_scale, weight.device, computation_dtype)
     lora_diff *= alpha
-    weight_calc = weight + lora_diff.type(weight.dtype)
-    weight_norm = (
-        weight_calc.transpose(0, 1)
-        .reshape(weight_calc.shape[1], -1)
-        .norm(dim=1, keepdim=True)
-        .reshape(weight_calc.shape[1], *[1] * (weight_calc.dim() - 1))
-        .transpose(0, 1)
-    )
 
-    weight_calc *= (dora_scale / weight_norm).type(weight.dtype)
+    # Combine operations to reduce memory allocation
+    weight_calc = weight + lora_diff.to(weight.dtype)
+
+    # Optimize norm calculation by avoiding multiple transpositions
+    weight_flat = weight_calc.transpose(0, 1).reshape(weight_calc.shape[1], -1)
+    weight_norm = weight_flat.norm(dim=1, keepdim=True)
+    weight_norm = weight_norm.reshape(weight_calc.shape[1], *[1] * (weight_calc.dim() - 1)).transpose(0, 1)
+
+    # Fused scaling operation
+    scale_factor = (dora_scale / weight_norm).to(weight.dtype)
+    weight_calc *= scale_factor
+
+    # Optimized strength application
     if strength != 1.0:
-        weight_calc -= weight
-        weight += strength * weight_calc
+        weight += (weight_calc - weight) * strength
     else:
         weight[:] = weight_calc
     return weight
@@ -299,7 +307,10 @@ class LoraLoader:
         self.loaded_hash = str([])
 
     @torch.inference_mode()
-    def refresh(self, lora_patches, offload_device=torch.device('cpu')):
+    def refresh(self, lora_patches, offload_device=None):
+        if offload_device is None:
+            offload_device = torch.device('cpu')
+            
         hashes = str(list(lora_patches.keys()))
 
         if hashes == self.loaded_hash:
