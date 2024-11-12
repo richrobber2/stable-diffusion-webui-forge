@@ -179,6 +179,8 @@ class T5Stack(torch.nn.Module):
             [T5Block(model_dim, inner_dim, ff_dim, ff_activation, gated_act, num_heads, relative_attention_bias=((not relative_attention) or (i == 0))) for i in range(num_layers)]
         )
         self.final_layer_norm = T5LayerNorm(model_dim)
+        # Precompute scaling factors for inference
+        self.layer_scales = [1.0 / math.sqrt(i + 1) for i in range(num_layers)]
 
     def forward(self, x, attention_mask=None):
         mask = None
@@ -195,12 +197,10 @@ class T5Stack(torch.nn.Module):
             )
 
         past_bias = None
-        # Add gradient checkpointing for memory efficiency
         for i, layer in enumerate(self.block):
             x, past_bias = layer(x, mask, past_bias)
-            # Add residual scaling to prevent gradient explosion
             if i > 0:
-                x = x * (1.0 / math.sqrt(i + 1))
+                x = x * self.layer_scales[i]
 
         x = self.final_layer_norm(x)
         return x
