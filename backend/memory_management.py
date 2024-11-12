@@ -60,7 +60,7 @@ try:
 
     if torch.xpu.is_available():
         xpu_available = True
-except:  # noqa: E722
+except (ImportError, AttributeError):
     pass
 
 try:
@@ -193,7 +193,7 @@ try:
     if is_nvidia():
         torch_version = torch.version.__version__
         if int(torch_version[0]) >= 2:
-            if ENABLE_PYTORCH_ATTENTION == False and args.attention_split == False and args.attention_quad == False:
+            if not ENABLE_PYTORCH_ATTENTION and not args.attention_split and not args.attention_quad:
                 ENABLE_PYTORCH_ATTENTION = True
             if torch.cuda.is_bf16_supported() and torch.cuda.get_device_properties(torch.cuda.current_device()).major >= 8:
                 VAE_DTYPES = [torch.bfloat16] + VAE_DTYPES
