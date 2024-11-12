@@ -97,7 +97,7 @@ class StableDiffusionXL(ForgeDiffusionEngine):
             height, width, 0, 0,  # crop_h, crop_w
             height, width         # target_height, target_width
         ], device=clip_pooled.device)
-        
+
         # More efficient embedding computation
         embedded = self.embedder(embedding_values.unsqueeze(1))
         flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
