@@ -147,7 +147,6 @@ class ClassicTextProcessingEngine:
 
     def tokenize_line(self, line):
         parsed = parsing.parse_prompt_attention(line)
-
         tokenized = self.tokenize([text for text, _ in parsed])
 
         chunks = []
@@ -156,20 +155,20 @@ class ClassicTextProcessingEngine:
         last_comma = -1
 
         def next_chunk(is_last=False):
-            nonlocal token_count
-            nonlocal last_comma
-            nonlocal chunk
+            nonlocal token_count, last_comma, chunk
 
             if is_last:
                 token_count += len(chunk.tokens)
             else:
                 token_count += self.chunk_length
 
-            to_add = self.chunk_length - len(chunk.tokens)
+            # Calculate padding more efficiently
+            to_add = max(0, self.chunk_length - len(chunk.tokens))
             if to_add > 0:
-                chunk.tokens += [self.id_end] * to_add
-                chunk.multipliers += [1.0] * to_add
+                chunk.tokens.extend([self.id_end] * to_add)
+                chunk.multipliers.extend([1.0] * to_add)
 
+            # Wrap chunk with start/end tokens
             chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
             chunk.multipliers = [1.0] + chunk.multipliers + [1.0]
 
@@ -186,28 +185,30 @@ class ClassicTextProcessingEngine:
             while position < len(tokens):
                 token = tokens[position]
 
-                comma_padding_backtrack = 20
-
+                # Optimize comma handling
                 if token == self.comma_token:
                     last_comma = len(chunk.tokens)
+                elif len(chunk.tokens) == self.chunk_length and last_comma != -1:
+                    # More efficient chunk splitting at comma
+                    if len(chunk.tokens) - last_comma <= 20:  # Using constant for clarity
+                        break_location = last_comma + 1
 
-                elif comma_padding_backtrack != 0 and len(chunk.tokens) == self.chunk_length and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
-                    break_location = last_comma + 1
+                        # Optimize token relocation
+                        reloc_tokens = chunk.tokens[break_location:]
+                        reloc_mults = chunk.multipliers[break_location:]
 
-                    reloc_tokens = chunk.tokens[break_location:]
-                    reloc_mults = chunk.multipliers[break_location:]
+                        del chunk.tokens[break_location:]
+                        del chunk.multipliers[break_location:]
 
-                    chunk.tokens = chunk.tokens[:break_location]
-                    chunk.multipliers = chunk.multipliers[:break_location]
-
-                    next_chunk()
-                    chunk.tokens = reloc_tokens
-                    chunk.multipliers = reloc_mults
+                        next_chunk()
+                        chunk.tokens = reloc_tokens
+                        chunk.multipliers = reloc_mults
 
                 if len(chunk.tokens) == self.chunk_length:
                     next_chunk()
 
-                embedding, embedding_length_in_tokens = self.embeddings.find_embedding_at_position(tokens, position)
+                # Handle embeddings
+                embedding, embedding_length = self.embeddings.find_embedding_at_position(tokens, position)
                 if embedding is None:
                     chunk.tokens.append(token)
                     chunk.multipliers.append(weight)
@@ -219,10 +220,9 @@ class ClassicTextProcessingEngine:
                     next_chunk()
 
                 chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
-
-                chunk.tokens += [0] * emb_len
-                chunk.multipliers += [weight] * emb_len
-                position += embedding_length_in_tokens
+                chunk.tokens.extend([0] * emb_len)
+                chunk.multipliers.extend([weight] * emb_len)
+                position += embedding_length
 
         if chunk.tokens or not chunks:
             next_chunk(is_last=True)
