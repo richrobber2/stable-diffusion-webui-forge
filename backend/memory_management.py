@@ -67,7 +67,7 @@ try:
     if torch.backends.mps.is_available():
         cpu_state = CPUState.MPS
         import torch.mps
-except:
+except Exception:
     pass
 
 if args.always_cpu:
@@ -136,12 +136,12 @@ print("Total VRAM {:0.0f} MB, total RAM {:0.0f} MB".format(total_vram, total_ram
 
 try:
     print("pytorch version: {}".format(torch.version.__version__))
-except:
+except Exception:
     pass
 
 try:
     OOM_EXCEPTION = torch.cuda.OutOfMemoryError
-except:
+except Exception:
     OOM_EXCEPTION = Exception
 
 if directml_enabled:
@@ -159,7 +159,7 @@ else:
         XFORMERS_IS_AVAILABLE = True
         try:
             XFORMERS_IS_AVAILABLE = xformers._has_cpp_library
-        except:
+        except Exception:
             pass
         try:
             XFORMERS_VERSION = xformers.version.__version__
@@ -168,9 +168,9 @@ else:
                 print("\nWARNING: This version of xformers has a major bug where you will get black images when generating high resolution images.")
                 print("Please downgrade or upgrade xformers to a different version.\n")
                 XFORMERS_ENABLED_VAE = False
-        except:
+        except Exception:
             pass
-    except:
+    except Exception:
         XFORMERS_IS_AVAILABLE = False
 
 
@@ -200,7 +200,7 @@ try:
     if is_intel_xpu():
         if args.attention_split == False and args.attention_quad == False:
             ENABLE_PYTORCH_ATTENTION = True
-except:
+except Exception:
     pass
 
 if is_intel_xpu():
@@ -262,7 +262,7 @@ def get_torch_device_name(device):
         if device.type == "cuda":
             try:
                 allocator_backend = torch.cuda.get_allocator_backend()
-            except:
+            except Exception:
                 allocator_backend = ""
             return "{} {} : {}".format(device, torch.cuda.get_device_name(device), allocator_backend)
         else:
@@ -276,7 +276,7 @@ def get_torch_device_name(device):
 try:
     torch_device_name = get_torch_device_name(get_torch_device())
     print("Device: {}".format(torch_device_name))
-except:
+except Exception:
     torch_device_name = ''
     print("Could not pick default device.")
 
@@ -756,7 +756,7 @@ def dtype_size(dtype):
     else:
         try:
             dtype_size = dtype.itemsize
-        except:  # Old pytorch doesn't have .itemsize
+        except AttributeError:  # Old pytorch doesn't have .itemsize
             pass
     return dtype_size
 
@@ -1063,11 +1063,11 @@ def get_free_memory(dev=None, torch_free_too=False):
             stats = torch.xpu.memory_stats(dev)
             mem_active = stats['active_bytes.all.current']
             mem_reserved = stats['reserved_bytes.all.current']
-            
+
             # Dynamic fragmentation factor based on memory pressure
             memory_pressure = mem_active / mem_reserved if mem_reserved > 0 else 0
             fragmentation_factor = max(0.7, 0.95 - (memory_pressure * 0.15))
-            
+
             mem_free_torch = (mem_reserved - mem_active) * fragmentation_factor
             mem_free_xpu = (torch.xpu.get_device_properties(dev).total_memory - mem_reserved) * fragmentation_factor
             mem_free_total = mem_free_xpu + mem_free_torch
@@ -1077,16 +1077,16 @@ def get_free_memory(dev=None, torch_free_too=False):
             mem_active = stats['active_bytes.all.current']
             mem_reserved = stats['reserved_bytes.all.current']
             mem_free_cuda, _ = torch.cuda.mem_get_info(dev)
-            
+
             # Dynamic fragmentation factor based on memory pressure
             memory_pressure = mem_active / mem_reserved if mem_reserved > 0 else 0
             fragmentation_factor = max(0.7, 0.95 - (memory_pressure * 0.15))
-            
+
             # Account for CUDA block allocation granularity
             CUDA_BLOCK_SIZE = 2 * 1024 * 1024  # 2MB blocks
-            mem_free_torch = ((mem_reserved - mem_active) * fragmentation_factor 
+            mem_free_torch = ((mem_reserved - mem_active) * fragmentation_factor
                              // CUDA_BLOCK_SIZE * CUDA_BLOCK_SIZE)
-            mem_free_total = ((mem_free_cuda + mem_free_torch) * fragmentation_factor 
+            mem_free_total = ((mem_free_cuda + mem_free_torch) * fragmentation_factor
                              // CUDA_BLOCK_SIZE * CUDA_BLOCK_SIZE)
 
     if torch_free_too:
