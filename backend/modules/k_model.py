@@ -46,14 +46,16 @@ class KModel(torch.nn.Module):
         return self.predictor.calculate_denoised(sigma, model_output, x)
 
     def memory_required(self, input_shape):
-        area = input_shape[0] * input_shape[2] * input_shape[3]
-        dtype_size = memory_management.dtype_size(self.computation_dtype)
+        pixel_area = input_shape[0] * input_shape[2] * input_shape[3]  # batch * height * width
+        base_memory_per_pixel = memory_management.dtype_size(self.computation_dtype)
 
+        # Attention memory scaling
         if attention.attention_function in [attention.attention_pytorch, attention.attention_xformers]:
-            scaler = 1.28
+            attention_scale = 1.28  # Optimized attention implementations
         else:
-            scaler = 1.65
+            attention_scale = 1.65  # Standard attention implementation
             if attention.get_attn_precision() == torch.float32:
-                dtype_size = 4
+                base_memory_per_pixel = 4  # Override for float32 precision
 
-        return scaler * area * dtype_size * 16384
+        # Total memory calculation (base_memory * scaling * feature_dimension)
+        return pixel_area * base_memory_per_pixel * attention_scale * 16384

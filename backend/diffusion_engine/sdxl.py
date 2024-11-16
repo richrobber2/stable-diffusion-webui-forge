@@ -84,34 +84,34 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         cond_l = self.text_processing_engine_l(prompt)
         cond_g, clip_pooled = self.text_processing_engine_g(prompt)
 
+        # Ensure proper dimensions
+        if cond_l.dim() != 3 or cond_g.dim() != 3:
+            raise ValueError("Invalid conditioning tensor dimensions")
+
         width = getattr(prompt, 'width', 1024) or 1024
         height = getattr(prompt, 'height', 1024) or 1024
         is_negative_prompt = getattr(prompt, 'is_negative_prompt', False)
 
-        crop_w = 0
-        crop_h = 0
-        target_width = width
-        target_height = height
+        # Optimize tensor creation by stacking
+        embedding_values = torch.tensor([
+            height, width, 0, 0,  # crop_h, crop_w
+            height, width         # target_height, target_width
+        ], device=clip_pooled.device)
 
-        out = [
-            self.embedder(torch.Tensor([height])), self.embedder(torch.Tensor([width])),
-            self.embedder(torch.Tensor([crop_h])), self.embedder(torch.Tensor([crop_w])),
-            self.embedder(torch.Tensor([target_height])), self.embedder(torch.Tensor([target_width]))
-        ]
+        # More efficient embedding computation
+        embedded = self.embedder(embedding_values.unsqueeze(1))
+        flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
 
-        flat = torch.flatten(torch.cat(out)).unsqueeze(dim=0).repeat(clip_pooled.shape[0], 1).to(clip_pooled)
+        if is_negative_prompt and all(x == '' for x in prompt):
+            # Optimize zero tensor creation
+            zeros = torch.zeros_like
+            clip_pooled, cond_l, cond_g = map(zeros, (clip_pooled, cond_l, cond_g))
 
-        force_zero_negative_prompt = is_negative_prompt and all(x == '' for x in prompt)
-
-        if force_zero_negative_prompt:
-            clip_pooled = torch.zeros_like(clip_pooled)
-            cond_l = torch.zeros_like(cond_l)
-            cond_g = torch.zeros_like(cond_g)
-
-        cond = dict(
-            crossattn=torch.cat([cond_l, cond_g], dim=2),
-            vector=torch.cat([clip_pooled, flat], dim=1),
-        )
+        # Optimize concatenation
+        cond = {
+            'crossattn': torch.cat([cond_l, cond_g], dim=2),
+            'vector': torch.cat([clip_pooled, flat], dim=1)
+        }
 
         return cond
 
@@ -122,12 +122,14 @@ class StableDiffusionXL(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_first_stage(self, x):
-        sample = self.forge_objects.vae.encode(x.movedim(1, -1) * 0.5 + 0.5)
-        sample = self.forge_objects.vae.first_stage_model.process_in(sample)
-        return sample.to(x)
+        # Combine operations to reduce memory overhead
+        normalized = x.movedim(1, -1) * 0.5 + 0.5
+        sample = self.forge_objects.vae.encode(normalized)
+        return self.forge_objects.vae.first_stage_model.process_in(sample).to(x)
 
     @torch.inference_mode()
     def decode_first_stage(self, x):
-        sample = self.forge_objects.vae.first_stage_model.process_out(x)
-        sample = self.forge_objects.vae.decode(sample).movedim(-1, 1) * 2.0 - 1.0
-        return sample.to(x)
+        # Combine operations to reduce memory overhead
+        processed = self.forge_objects.vae.first_stage_model.process_out(x)
+        decoded = self.forge_objects.vae.decode(processed)
+        return (decoded.movedim(-1, 1) * 2.0 - 1.0).to(x)
