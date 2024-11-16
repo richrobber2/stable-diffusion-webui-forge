@@ -198,7 +198,7 @@ try:
             if torch.cuda.is_bf16_supported() and torch.cuda.get_device_properties(torch.cuda.current_device()).major >= 8:
                 VAE_DTYPES = [torch.bfloat16] + VAE_DTYPES
     if is_intel_xpu():
-        if args.attention_split == False and args.attention_quad == False:
+        if not args.attention_split and not args.attention_quad:
             ENABLE_PYTORCH_ATTENTION = True
 except Exception:
     pass
