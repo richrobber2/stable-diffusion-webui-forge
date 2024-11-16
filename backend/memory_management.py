@@ -1048,7 +1048,7 @@ def force_upcast_attention_dtype():
     try:
         if platform.mac_ver()[0] in ['14.5']:  # black image bug on OSX Sonoma 14.5
             upcast = True
-    except:
+    except Exception:
         pass
     if upcast:
         return torch.float32
@@ -1251,7 +1251,7 @@ def can_install_bnb():
             return True
 
         return False
-    except:
+    except Exception:
         return False
 
 
