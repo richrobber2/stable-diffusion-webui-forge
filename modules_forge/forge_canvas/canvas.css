@@ -157,21 +157,3 @@
     height: 30%;
     transform: translate(-50%, -50%);
 }
-
-.forge-brush-shape-selector {
-    background-color: #4a4a4a;
-    color: white;
-    border: none;
-    padding: 2px 6px;
-    margin: 2px;
-    cursor: pointer;
-}
-
-.forge-brush-shape-selector:hover {
-    background-color: #5e5e5e;
-}
-
-.forge-brush-shape-selector option {
-    background-color: #4a4a4a;
-    color: white;
-}
