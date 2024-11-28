@@ -81,7 +81,9 @@ def attention_basic(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
                     attn_mask=mask, dropout_p=0.0, scale=scale,
                     is_causal=False
                 )
-                return out.to(q.dtype).view(b, -1, heads * dim_head)
+                out.to_(q.dtype)
+                out.view_(b, -1, heads * dim_head)
+                return out
             except:
                 pass
 
@@ -297,7 +299,7 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
                     del s1
                     first_op_done = True
 
-                    r1[:, i:end] = torch.einsum('b i j, b j d -> b i d', s2, v)
+                    r1[:, i:end].add_(torch.einsum('b i j, b j d -> b i d', s2, v))
                     del s2
                 break
             except memory_management.OOM_EXCEPTION as e:
@@ -416,9 +418,9 @@ def slice_attention_single_head_spatial(q, k, v):
                     beta=0.0,
                     alpha=scale
                 )
-                s2 = s1.softmax(dim=-1)
-                r1[:, :, i:end] = torch.bmm(v, s2.transpose(-2, -1))
-                del s1, s2
+                s1.softmax_(dim=-1)
+                r1[:, :, i:end].copy_(torch.bmm(v, s1.transpose(-2, -1)))
+                del s1
 
             return r1
 
