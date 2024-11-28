@@ -192,15 +192,15 @@ def replace_state_dict(sd, asd, guess):
             "ffn_norm": "layer.1.layer_norm",
         }
         wierd_t5_pre_quant_keys_from_city96 = ['shared.weight']
-        asd_new = {}
-        for k, v in asd.items():
-            for s, d in wierd_t5_format_from_city96.items():
-                k = k.replace(s, d)
-            asd_new[k] = v
-        for k in wierd_t5_pre_quant_keys_from_city96:
-            asd_new[k] = asd_new[k].dequantize_as_pytorch_parameter()
-        asd.clear()
-        asd = asd_new
+        
+        # In-place modification of 'asd'
+        for key in list(asd.keys()):
+            for old, new in wierd_t5_format_from_city96.items():
+                key = key.replace(old, new)
+            asd[key] = asd.pop(key)
+        
+        for key in wierd_t5_pre_quant_keys_from_city96:
+            asd[key] = asd[key].dequantize_as_pytorch_parameter()
 
     if "decoder.conv_in.weight" in asd:
         keys_to_delete = [k for k in sd if k.startswith(vae_key_prefix)]
