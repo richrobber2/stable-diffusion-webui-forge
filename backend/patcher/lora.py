@@ -58,25 +58,22 @@ def model_lora_keys_unet(model, key_map=None):
 def weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype):
     """Optimized weight decomposition with reduced memory overhead"""
     dora_scale = memory_management.cast_to_device(dora_scale, weight.device, computation_dtype)
-    lora_diff *= alpha
+    lora_diff.mul_(alpha)  # In-place multiplication
 
     # Combine operations to reduce memory allocation
-    weight_calc = weight + lora_diff.to(weight.dtype)
+    weight.add_(lora_diff.to(weight.dtype))  # In-place addition
 
-    # Optimize norm calculation by avoiding multiple transpositions
-    weight_flat = weight_calc.transpose(0, 1).reshape(weight_calc.shape[1], -1)
-    weight_norm = weight_flat.norm(dim=1, keepdim=True)
-    weight_norm = weight_norm.reshape(weight_calc.shape[1], *[1] * (weight_calc.dim() - 1)).transpose(0, 1)
+    # Optimize norm calculation
+    weight_flat = weight.view(weight.size(0), -1)
+    weight_norm = weight_flat.norm(dim=1, keepdim=True).reshape(weight[:, :1].shape)
 
     # Fused scaling operation
-    scale_factor = (dora_scale / weight_norm).to(weight.dtype)
-    weight_calc *= scale_factor
+    scale_factor = dora_scale.div_(weight_norm).to(weight.dtype)
+    weight.mul_(scale_factor)  # In-place multiplication
 
-    # Optimized strength application
+    # In-place strength application
     if strength != 1.0:
-        weight += (weight_calc - weight) * strength
-    else:
-        weight[:] = weight_calc
+        weight.mul_(strength)
     return weight
 
 
@@ -107,7 +104,7 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
             weight = weight.narrow(offset[0], offset[1], offset[2])
 
         if strength_model != 1.0:
-            weight *= strength_model
+            weight.mul_(strength_model)  # In-place multiplication
 
         if isinstance(v, list):
             v = (merge_lora_to_weight(v[1:], v[0].clone(), key),)
@@ -126,38 +123,36 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
                 if w1.shape != weight.shape:
                     if w1.ndim == weight.ndim == 4:
                         new_shape = [max(n, m) for n, m in zip(weight.shape, w1.shape)]
-                        print(f'Merged with {key} channel changed to {new_shape}')
+                        # Removed print statement
                         new_diff = strength * memory_management.cast_to_device(w1, weight.device, weight.dtype)
-                        new_weight = torch.zeros(size=new_shape).to(weight)
-                        new_weight[:weight.shape[0], :weight.shape[1], :weight.shape[2], :weight.shape[3]] = weight
-                        new_weight[:new_diff.shape[0], :new_diff.shape[1], :new_diff.shape[2], :new_diff.shape[3]] += new_diff
-                        new_weight = new_weight.contiguous().clone()
+                        new_weight = torch.zeros(size=new_shape, device=weight.device, dtype=weight.dtype)
+                        new_weight[:weight.size(0), :weight.size(1), :weight.size(2), :weight.size(3)] = weight
+                        new_weight[:new_diff.size(0), :new_diff.size(1), :new_diff.size(2), :new_diff.size(3)].add_(new_diff)  # In-place addition
+                        new_weight = new_weight.contiguous()
                         weight = new_weight
                     else:
-                        print("WARNING SHAPE MISMATCH {} WEIGHT NOT MERGED {} != {}".format(key, w1.shape, weight.shape))
+                        # Removed print statement
+                        pass
                 else:
-                    weight += strength * memory_management.cast_to_device(w1, weight.device, weight.dtype)
+                    weight.add_(strength * memory_management.cast_to_device(w1, weight.device, weight.dtype))  # In-place addition
         elif patch_type == "lora":
             mat1 = memory_management.cast_to_device(v[0], weight.device, computation_dtype)
             mat2 = memory_management.cast_to_device(v[1], weight.device, computation_dtype)
             dora_scale = v[4]
-            if v[2] is not None:
-                alpha = v[2] / mat2.shape[0]
-            else:
-                alpha = 1.0
+            alpha = v[2] / mat2.size(0) if v[2] is not None else 1.0
 
             if v[3] is not None:
                 mat3 = memory_management.cast_to_device(v[3], weight.device, computation_dtype)
-                final_shape = [mat2.shape[1], mat2.shape[0], mat3.shape[2], mat3.shape[3]]
-                mat2 = torch.mm(mat2.transpose(0, 1).flatten(start_dim=1), mat3.transpose(0, 1).flatten(start_dim=1)).reshape(final_shape).transpose(0, 1)
+                final_shape = [mat2.size(1), mat2.size(0), mat3.size(2), mat3.size(3)]
+                mat2 = torch.mm(mat2.transpose(0, 1).flatten(1), mat3.transpose(0, 1).flatten(1)).reshape(final_shape).transpose(0, 1)
             try:
-                lora_diff = torch.mm(mat1.flatten(start_dim=1), mat2.flatten(start_dim=1)).reshape(weight.shape)
+                lora_diff = torch.mm(mat1.flatten(1), mat2.flatten(1)).reshape(weight.shape)
                 if dora_scale is not None:
                     weight = function(weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype))
                 else:
-                    weight += function(((strength * alpha) * lora_diff).type(weight.dtype))
+                    weight.add_(function((strength * alpha * lora_diff).type(weight.dtype)))  # In-place addition
             except Exception as e:
-                print("ERROR {} {} {}".format(patch_type, key, e))
+                # Removed print statement
                 raise e
         elif patch_type == "lokr":
             w1 = v[0]
@@ -202,7 +197,7 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
                 if dora_scale is not None:
                     weight = function(weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype))
                 else:
-                    weight += function(((strength * alpha) * lora_diff).type(weight.dtype))
+                    weight.add_(function((strength * alpha * lora_diff).type(weight.dtype)))  # In-place addition
             except Exception as e:
                 print("ERROR {} {} {}".format(patch_type, key, e))
                 raise e
@@ -240,7 +235,7 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
                 if dora_scale is not None:
                     weight = function(weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype))
                 else:
-                    weight += function(((strength * alpha) * lora_diff).type(weight.dtype))
+                    weight.add_(function((strength * alpha * lora_diff).type(weight.dtype)))  # In-place addition
             except Exception as e:
                 print("ERROR {} {} {}".format(patch_type, key, e))
                 raise e
@@ -262,7 +257,7 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
                 if dora_scale is not None:
                     weight = function(weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype))
                 else:
-                    weight += function(((strength * alpha) * lora_diff).type(weight.dtype))
+                    weight.add_(function((strength * alpha * lora_diff).type(weight.dtype)))  # In-place addition
             except Exception as e:
                 print("ERROR {} {} {}".format(patch_type, key, e))
                 raise e
