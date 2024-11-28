@@ -206,18 +206,15 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
 
         h = heads
         if skip_reshape:
-            q, k, v = map(
-                lambda t: t.reshape(b * heads, -1, dim_head),
-                (q, k, v),
-            )
+            q, k, v = (t.reshape(b * heads, -1, dim_head) for t in (q, k, v))
         else:
-            q, k, v = map(
-                lambda t: t.unsqueeze(3)
+            q, k, v = (
+                t.unsqueeze(3)
                 .reshape(b, -1, heads, dim_head)
                 .permute(0, 2, 1, 3)
                 .reshape(b * heads, -1, dim_head)
-                .contiguous(),
-                (q, k, v),
+                .contiguous()
+                for t in (q, k, v)
             )
 
         r1 = torch.zeros(q.shape[0], q.shape[1], v.shape[2], device=q.device, dtype=q.dtype)
@@ -338,15 +335,9 @@ def attention_xformers(q, k, v, heads, mask=None, attn_precision=None, skip_resh
         return attention_pytorch(q, k, v, heads, mask, skip_reshape=skip_reshape)
 
     if skip_reshape:
-        q, k, v = map(
-            lambda t: t.reshape(b * heads, -1, dim_head),
-            (q, k, v),
-        )
+        q, k, v = (t.reshape(b * heads, -1, dim_head) for t in (q, k, v))
     else:
-        q, k, v = map(
-            lambda t: t.reshape(b, -1, heads, dim_head),
-            (q, k, v),
-        )
+        q, k, v = (t.reshape(b, -1, heads, dim_head) for t in (q, k, v))
 
     if mask is not None:
         pad = 8 - q.shape[1] % 8
@@ -377,10 +368,7 @@ def attention_pytorch(q, k, v, heads, mask=None, attn_precision=None, skip_resha
     else:
         b, _, dim_head = q.shape
         dim_head //= heads
-        q, k, v = map(
-            lambda t: t.view(b, -1, heads, dim_head).transpose(1, 2),
-            (q, k, v),
-        )
+        q, k, v = (t.view(b, -1, heads, dim_head).transpose(1, 2) for t in (q, k, v))
 
     out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
     out = (
