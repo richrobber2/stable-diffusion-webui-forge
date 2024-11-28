@@ -190,7 +190,7 @@ class UnetPatcher(ModelPatcher):
         patch_flat = {}
         for model_key, v in patch_dict.items():
             for patch_type, weight_list in v.items():
-                patch_flat[model_key] = (patch_type, weight_list)
+                patch_flat.setdefault(model_key, []).append((patch_type, weight_list))
 
         self.add_patches(filename=filename, patches=patch_flat, strength_patch=float(strength), strength_model=1.0)
         return
