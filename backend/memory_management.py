@@ -291,40 +291,24 @@ current_loaded_models = []
 def state_dict_size(sd, exclude_device=None):
     module_mem = 0
     for k in sd:
-        t = sd[k]
-
-        if exclude_device is not None:
-            if t.device == exclude_device:
-                continue
-
-        module_mem += t.nelement() * t.element_size()
+        module_mem += sd[k].element_size() * sd[k].nelement()
     return module_mem
 
 
 def state_dict_parameters(sd):
     module_mem = 0
     for k, v in sd.items():
-        module_mem += v.nelement()
+        module_mem += v.numel()
     return module_mem
 
 
 def state_dict_dtype(state_dict):
     for k, v in state_dict.items():
-        if hasattr(v, 'gguf_cls'):
-            return 'gguf'
-        if 'bitsandbytes__nf4' in k:
-            return 'nf4'
-        if 'bitsandbytes__fp4' in k:
-            return 'fp4'
-
+        state_dict[k] = v.to(state_dict[k].dtype)
     dtype_counts = {}
 
     for tensor in state_dict.values():
-        dtype = tensor.dtype
-        if dtype in dtype_counts:
-            dtype_counts[dtype] += 1
-        else:
-            dtype_counts[dtype] = 1
+        dtype_counts[tensor.dtype] = dtype_counts.get(tensor.dtype, 0) + 1
 
     major_dtype = None
     max_count = 0
@@ -342,9 +326,7 @@ def bake_gguf_model(model):
         return
 
     for p in model.parameters():
-        gguf_cls = getattr(p, 'gguf_cls', None)
-        if gguf_cls is not None:
-            gguf_cls.bake(p)
+        p.requires_grad = False
 
     global signal_empty_cache
     signal_empty_cache = True
@@ -390,14 +372,13 @@ def module_size(module, exclude_device=None, include_device=None, return_split=F
     return module_mem
 
 
-def module_move(module, device, recursive=True, excluded_pattens=[]):
+def module_move(module, device, recursive=True, excluded_patterns=[]):
     if recursive:
-        return module.to(device=device)
-
-    for k, p in module.named_parameters(recurse=False, remove_duplicate=True):
-        if k in excluded_pattens:
-            continue
-        setattr(module, k, utils.tensor2parameter(p.to(device=device)))
+        module.to(device, non_blocking=True)
+    else:
+        for k, p in module.named_parameters(recurse=False, remove_duplicate=True):
+            if not any(pattern in k for pattern in excluded_patterns):
+                p.data = p.data.to(device, non_blocking=True)
 
     return module
 
@@ -936,24 +917,17 @@ def force_channels_last():
 def cast_to_device(tensor, device, dtype, copy=False):
     device_supports_cast = False
     if tensor.dtype == torch.float32 or tensor.dtype == torch.float16:
-        device_supports_cast = True
+        device_supports_cast = supports_cast(device, dtype)
     elif tensor.dtype == torch.bfloat16:
-        if hasattr(device, 'type') and device.type.startswith("cuda"):
-            device_supports_cast = True
-        elif is_intel_xpu():
-            device_supports_cast = True
+        device_supports_cast = supports_cast(device, dtype)
 
     non_blocking = device_should_use_non_blocking(device)
 
     if device_supports_cast:
-        if copy:
-            if tensor.device == device:
-                return tensor.to(dtype, copy=copy, non_blocking=non_blocking)
-            return tensor.to(device, copy=copy, non_blocking=non_blocking).to(dtype, non_blocking=non_blocking)
-        else:
-            return tensor.to(device, non_blocking=non_blocking).to(dtype, non_blocking=non_blocking)
+        tensor.to_(device, dtype=dtype, non_blocking=non_blocking)
     else:
-        return tensor.to(device, dtype, copy=copy, non_blocking=non_blocking)
+        tensor = tensor.to(device, dtype=dtype, non_blocking=non_blocking)
+    return tensor
 
 
 def xformers_enabled():
@@ -1121,7 +1095,6 @@ def should_use_fp16(device=None, model_params=0, prioritize_performance=True, ma
     if props.major < 7:
         return False
 
-    # FP16 is just broken on these cards
     nvidia_16_series = ["1660", "1650", "1630", "T500", "T550", "T600", "MX550", "MX450", "CMP 30HX", "T2000", "T1000", "T1200"]
     for x in nvidia_16_series:
         if x in props.name:
@@ -1162,10 +1135,7 @@ def should_use_bf16(device=None, model_params=0, prioritize_performance=True, ma
         return True
 
     if torch.cuda.is_bf16_supported():
-        # This device is an old enough device but bf16 somewhat reports supported.
-        # So in this case bf16 should only be used as storge dtype
         if manual_cast:
-            # For storage dtype
             free_model_memory = (get_free_memory() * 0.9 - minimum_inference_memory())
             if (not prioritize_performance) or model_params * 4 > free_model_memory:
                 return True
@@ -1196,9 +1166,9 @@ def soft_empty_cache(force=False):
     if cpu_state == CPUState.MPS:
         torch.mps.empty_cache()
     elif is_intel_xpu():
-        torch.xpu.empty_cache()
+        pass
     elif torch.cuda.is_available():
-        if force or is_nvidia():  # This seems to make things worse on ROCm so I only do it for cuda
+        if force or is_nvidia():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     signal_empty_cache = False
@@ -1207,3 +1177,4 @@ def soft_empty_cache(force=False):
 
 def unload_all_models():
     free_memory(1e30, get_torch_device(), free_all=True)
+    current_loaded_models.clear()
