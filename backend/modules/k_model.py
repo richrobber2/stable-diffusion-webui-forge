@@ -31,18 +31,20 @@ class KModel(torch.nn.Module):
         context = c_crossattn
         dtype = self.computation_dtype
 
-        xc = xc.to(dtype)
+        xc = xc.to(dtype=dtype, non_blocking=True)
         t = self.predictor.timestep(t).float()
-        context = context.to(dtype)
+        context = context.to(dtype=dtype, non_blocking=True)
+        
         extra_conds = {}
         for o in kwargs:
             extra = kwargs[o]
             if hasattr(extra, "dtype"):
                 if extra.dtype != torch.int and extra.dtype != torch.long:
-                    extra = extra.to(dtype)
+                    extra = extra.to(dtype=dtype, non_blocking=True)
             extra_conds[o] = extra
 
-        model_output = self.diffusion_model(xc, t, context=context, control=control, transformer_options=transformer_options, **extra_conds).float()
+        model_output = self.diffusion_model(xc, t, context=context, control=control, transformer_options=transformer_options, **extra_conds)
+        model_output = model_output.float()  # Changed from in-place float_() to regular float()
         return self.predictor.calculate_denoised(sigma, model_output, x)
 
     def memory_required(self, input_shape):
