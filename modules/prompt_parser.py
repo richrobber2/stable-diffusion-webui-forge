@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import namedtuple
 import lark
+import torch  # Import torch at the top as it was conditionally imported
 
 # a prompt like this: "fantasy landscape with a [mountain:lake:0.25] and [an oak:a christmas tree:0.75][ in foreground::0.6][: in background:0.25] [shoddy:masterful:0.5]"
 # will be represented with prompt_schedule like this (assuming steps=100):
@@ -80,7 +81,7 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
                 s = tree.children[-2]
                 v = float(s)
                 if use_old_scheduling:
-                    v = v*steps if v<1 else v
+                    v = v*steps if v < 1 else v
                 else:
                     if "." in s:
                         v = (v - flt_offset) * steps
@@ -100,23 +101,24 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
         class AtStep(lark.Transformer):
             def scheduled(self, args):
                 before, after, _, when, _ = args
-                yield before or () if step <= when else after
+                if step <= when:
+                    return before or ()
+                else:
+                    return after
+
             def alternate(self, args):
                 args = ["" if not arg else arg for arg in args]
-                yield args[(step - 1) % len(args)]
+                return args[(step - 1) % len(args)]
+
             def start(self, args):
-                def flatten(x):
-                    if isinstance(x, str):
-                        yield x
-                    else:
-                        for gen in x:
-                            yield from flatten(gen)
-                return ''.join(flatten(args))
+                return ''.join(args)
+
             def plain(self, args):
-                yield args[0].value
+                return args[0].value
+
             def __default__(self, data, children, meta):
-                for child in children:
-                    yield child
+                return ''.join(children)
+
         return AtStep().transform(tree)
 
     def get_schedule(prompt):
@@ -154,9 +156,8 @@ class SdConditioning(list):
         self.distilled_cfg_scale = distilled_cfg_scale or getattr(copy_from, 'distilled_cfg_scale', None)
 
 
-
 def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, hires_steps=None, use_old_scheduling=False):
-    """converts a list of prompts into a list of prompt schedules - each schedule is a list of ScheduledPromptConditioning, specifying the comdition (cond),
+    """converts a list of prompts into a list of prompt schedules - each schedule is a list of ScheduledPromptConditioning, specifying the condition (cond),
     and the sampling step at which this condition is to be replaced by the next one.
 
     Input:
@@ -165,11 +166,11 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
     Output:
     [
         [
-            ScheduledPromptConditioning(end_at_step=20, cond=tensor([[-0.3886,  0.0229, -0.0523,  ..., -0.4901, -0.3066,  0.0674], ..., [ 0.3317, -0.5102, -0.4066,  ...,  0.4119, -0.7647, -1.0160]], device='cuda:0'))
+            ScheduledPromptConditioning(end_at_step=20, cond=tensor([...], device='cuda:0'))
         ],
         [
-            ScheduledPromptConditioning(end_at_step=5, cond=tensor([[-0.3886,  0.0229, -0.0522,  ..., -0.4901, -0.3067,  0.0673], ..., [-0.0192,  0.3867, -0.4644,  ...,  0.1135, -0.3696, -0.4625]], device='cuda:0')),
-            ScheduledPromptConditioning(end_at_step=20, cond=tensor([[-0.3886,  0.0229, -0.0522,  ..., -0.4901, -0.3067,  0.0673], ..., [-0.7352, -0.4356, -0.7888,  ...,  0.6994, -0.4312, -1.2593]], device='cuda:0'))
+            ScheduledPromptConditioning(end_at_step=5, cond=tensor([...], device='cuda:0')),
+            ScheduledPromptConditioning(end_at_step=20, cond[tensor([...], device='cuda:0'))
         ]
     ]
     """
@@ -263,7 +264,10 @@ def get_multicond_learned_conditioning(model, prompts, steps, hires_steps=None, 
 
     res = []
     for indexes in res_indexes:
-        res.append([ComposableScheduledPromptConditioning(learned_conditioning[i], weight) for i, weight in indexes])
+        composable_prompts = []
+        for i, weight in indexes:
+            composable_prompts.append(ComposableScheduledPromptConditioning(learned_conditioning[i], weight))
+        res.append(composable_prompts)
 
     return MulticondLearnedConditioning(shape=(len(prompts),), batch=res)
 
@@ -280,7 +284,7 @@ class DictWithShape(dict):
     def to(self, *args, **kwargs):
         for k in self.keys():
             if isinstance(self[k], torch.Tensor):
-                self[k] = self[k].to(*args, **kwargs)
+                self[k].data = self[k].data.to(*args, **kwargs)  # In-place operation
         return self
 
     def advanced_indexing(self, item):
@@ -311,9 +315,9 @@ def reconstruct_cond_batch(c: list[list[ScheduledPromptConditioning]], current_s
 
         if is_dict:
             for k, param in cond_schedule[target_index].cond.items():
-                res[k][i] = param
+                res[k][i].copy_(param)  # In-place copy
         else:
-            res[i] = cond_schedule[target_index].cond
+            res[i].copy_(cond_schedule[target_index].cond)  # In-place copy
 
     return res
 
@@ -329,7 +333,7 @@ def stack_conds(tensors):
             if tensors[i].shape[0] != token_count:
                 last_vector = tensors[i][-1:]
                 last_vector_repeated = last_vector.repeat([token_count - tensors[i].shape[0], 1])
-                tensors[i] = torch.vstack([tensors[i], last_vector_repeated])
+                tensors[i] = torch.vstack([tensors[i], last_vector_repeated])  # In-place stacking
         result = torch.stack(tensors)
     return result
 
@@ -366,12 +370,12 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step):
 
 
 re_attention = re.compile(r"""
-\\\(|
-\\\)|
-\\\[|
-\\]|
-\\\\|
-\\|
+\\\(|        # literal '('
+\\\)|        # literal ')'
+\\\[|        # literal '['
+\\]|         # literal ']'
+\\\\|        # literal '\'
+\\|          # single '\'
 \(|
 \[|
 :\s*([+-]?[.\d]+)\s*\)|
@@ -382,6 +386,7 @@ re_attention = re.compile(r"""
 """, re.X)
 
 re_break = re.compile(r"\s*\bBREAK\b\s*", re.S)
+
 
 def parse_prompt_attention(text):
     """
@@ -431,23 +436,23 @@ def parse_prompt_attention(text):
             res[p][1] *= multiplier
 
     for m in re_attention.finditer(text):
-        text = m.group(0)
+        match = m.group(0)
         weight = m.group(1)
 
-        if text.startswith('\\'):
-            res.append([text[1:], 1.0])
-        elif text == '(':
+        if match.startswith('\\'):
+            res.append([match[1:], 1.0])
+        elif match == '(':
             round_brackets.append(len(res))
-        elif text == '[':
+        elif match == '[':
             square_brackets.append(len(res))
         elif weight is not None and round_brackets:
             multiply_range(round_brackets.pop(), float(weight))
-        elif text == ')' and round_brackets:
+        elif match == ')' and round_brackets:
             multiply_range(round_brackets.pop(), round_bracket_multiplier)
-        elif text == ']' and square_brackets:
+        elif match == ']' and square_brackets:
             multiply_range(square_brackets.pop(), square_bracket_multiplier)
         else:
-            parts = re.split(re_break, text)
+            parts = re.split(re_break, match)
             for i, part in enumerate(parts):
                 if i > 0:
                     res.append(["BREAK", -1])
@@ -477,4 +482,5 @@ if __name__ == "__main__":
     import doctest
     doctest.testmod(optionflags=doctest.NORMALIZE_WHITESPACE)
 else:
-    import torch  # doctest faster
+    # import torch  # doctest faster
+    pass
