@@ -125,14 +125,14 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
         eps = torch.randn_like(x) * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            x += eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
         dt = sigmas[i + 1] - sigma_hat
         # Euler method
-        x = x + d * dt
+        x += d * dt
     return x
 
 
@@ -150,9 +150,9 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         d = to_d(x, sigmas[i], denoised)
         # Euler method
         dt = sigma_down - sigmas[i]
-        x = x + d * dt
+        x += d * dt
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x += noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
     return x
 
 
@@ -166,7 +166,7 @@ def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, 
         eps = torch.randn_like(x) * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            x += eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
         if callback is not None:
@@ -174,14 +174,14 @@ def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, 
         dt = sigmas[i + 1] - sigma_hat
         if sigmas[i + 1] == 0:
             # Euler method
-            x = x + d * dt
+            x += d * dt
         else:
             # Heun's method
             x_2 = x + d * dt
             denoised_2 = model(x_2, sigmas[i + 1] * s_in, **extra_args)
             d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
             d_prime = (d + d_2) / 2
-            x = x + d_prime * dt
+            x += d_prime * dt
     return x
 
 
@@ -195,7 +195,7 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
         eps = torch.randn_like(x) * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            x += eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
         if callback is not None:
@@ -203,7 +203,7 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
         if sigmas[i + 1] == 0:
             # Euler method
             dt = sigmas[i + 1] - sigma_hat
-            x = x + d * dt
+            x += d * dt
         else:
             # DPM-Solver-2
             sigma_mid = sigma_hat.log().lerp(sigmas[i + 1].log(), 0.5).exp()
@@ -212,7 +212,7 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
             x_2 = x + d * dt_1
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
-            x = x + d_2 * dt_2
+            x += d_2 * dt_2
     return x
 
 
@@ -231,7 +231,7 @@ def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         if sigma_down == 0:
             # Euler method
             dt = sigma_down - sigmas[i]
-            x = x + d * dt
+            x += d * dt
         else:
             # DPM-Solver-2
             sigma_mid = sigmas[i].log().lerp(sigma_down.log(), 0.5).exp()
@@ -240,8 +240,8 @@ def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
             x_2 = x + d * dt_1
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
-            x = x + d_2 * dt_2
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x += d_2 * dt_2
+            x += noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
     return x
 
 
@@ -274,7 +274,7 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         cur_order = min(i + 1, order)
         coeffs = [linear_multistep_coeff(cur_order, sigmas_cpu, i, j) for j in range(cur_order)]
-        x = x + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
+        x += sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
     return x
 
 
@@ -421,7 +421,7 @@ class DPMSolver(nn.Module):
             else:
                 x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
 
-            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
+            x += su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
 
         return x
 
@@ -524,7 +524,7 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
             # Euler method
             d = to_d(x, sigmas[i], denoised)
             dt = sigma_down - sigmas[i]
-            x = x + d * dt
+            x += d * dt
         else:
             # DPM-Solver++(2S)
             t, t_next = t_fn(sigmas[i]), t_fn(sigma_down)
@@ -536,7 +536,7 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_2
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x += noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
     return x
 
 
@@ -558,7 +558,7 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
             # Euler method
             d = to_d(x, sigmas[i], denoised)
             dt = sigmas[i + 1] - sigmas[i]
-            x = x + d * dt
+            x += d * dt
         else:
             # DPM-Solver++
             t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
@@ -578,7 +578,7 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
             t_next_ = t_fn(sd)
             denoised_d = (1 - fac) * denoised + fac * denoised_2
             x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
+            x += noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
     return x
 
 
@@ -646,7 +646,7 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
                     x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise
+                x += noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise
 
             h_last = h
 
@@ -697,7 +697,7 @@ def sample_dpmpp_3m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
                 x = x + phi_2 * d
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * h * eta).expm1().neg().sqrt() * s_noise
+                x += noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * h * eta).expm1().neg().sqrt() * s_noise
 
             h_1, h_2 = h, h_1
 
@@ -715,7 +715,7 @@ def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=Non
         eps = torch.randn_like(x) * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            x += eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
         if callback is not None:
@@ -723,7 +723,7 @@ def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=Non
         dt = sigmas[i + 1] - sigma_hat
         if sigmas[i + 1] == s_end:
             # Euler method
-            x = x + d * dt
+            x += d * dt
         elif sigmas[i + 2] == s_end:
 
             # Heun's method
@@ -738,7 +738,7 @@ def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=Non
             d_prime = d * w1 + d_2 * w2
 
 
-            x = x + d_prime * dt
+            x += d_prime * dt
 
         else:
             # Heun++
@@ -757,7 +757,7 @@ def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=Non
             w1 = 1 - w2 - w3
 
             d_prime = w1 * d + w2 * d_2 + w3 * d_3
-            x = x + d_prime * dt
+            x += d_prime * dt
     return x
 
 
