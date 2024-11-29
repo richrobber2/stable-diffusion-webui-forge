@@ -122,14 +122,17 @@ class StableDiffusionXL(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_first_stage(self, x):
-        # Combine operations to reduce memory overhead
-        normalized = x.movedim(1, -1) * 0.5 + 0.5
-        sample = self.forge_objects.vae.encode(normalized)
+        # Use in-place operations for normalization
+        x = x.movedim(1, -1)
+        x.mul_(0.5).add_(0.5)  # in-place version of * 0.5 + 0.5
+        sample = self.forge_objects.vae.encode(x)
         return self.forge_objects.vae.first_stage_model.process_in(sample).to(x)
 
     @torch.inference_mode()
     def decode_first_stage(self, x):
-        # Combine operations to reduce memory overhead
         processed = self.forge_objects.vae.first_stage_model.process_out(x)
         decoded = self.forge_objects.vae.decode(processed)
-        return (decoded.movedim(-1, 1) * 2.0 - 1.0).to(x)
+        decoded = decoded.movedim(-1, 1)
+        # Use in-place operations for denormalization
+        decoded.mul_(2.0).sub_(1.0)  # in-place version of * 2.0 - 1.0
+        return decoded.to(x)
