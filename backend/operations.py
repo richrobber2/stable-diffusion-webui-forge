@@ -71,6 +71,7 @@ def weights_manual_cast(layer, x, skip_weight_dtype=False, skip_bias_dtype=False
     else:
         bias_args = dict(device=target_device, dtype=target_dtype, non_blocking=non_blocking)
 
+    # Use in-place operations when possible during manual casting
     if stream.should_use_stream():
         with stream.stream_context()(stream.mover_stream):
             weight, bias = get_weight_and_bias(layer, weight_args, bias_args, weight_fn=weight_fn, bias_fn=bias_fn)
@@ -187,7 +188,7 @@ class ForgeOperations:
                     return self._conv_forward(x, weight, bias)
             else:
                 weight, bias = get_weight_and_bias(self)
-                return super()._conv_forward(input, weight, bias)
+                return super()._conv_forward(x, weight, bias)
 
     class Conv1d(torch.nn.Conv1d):
 
@@ -207,7 +208,7 @@ class ForgeOperations:
                     return self._conv_forward(x, weight, bias)
             else:
                 weight, bias = get_weight_and_bias(self)
-                return super()._conv_forward(input, weight, bias)
+                return super()._conv_forward(x, weight, bias)
 
     class ConvTranspose2d(torch.nn.ConvTranspose2d):
 
@@ -282,7 +283,7 @@ class ForgeOperations:
                 weight, bias = get_weight_and_bias(self)
                 num_spatial_dims = 3
                 output_padding = self._output_padding(x, output_size, self.stride, self.padding, self.kernel_size, num_spatial_dims, self.dilation)
-                return torch.nn.functional.conv_transpose2d(x, weight, bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
+                return torch.nn.functional.conv_transpose3d(x, weight, bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
 
     class GroupNorm(torch.nn.GroupNorm):
 
