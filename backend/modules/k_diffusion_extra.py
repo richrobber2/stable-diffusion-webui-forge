@@ -18,9 +18,9 @@ def generic_step_sampler(model, x, sigmas, extra_args=None, callback=None, disab
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        x = step_function(x / torch.sqrt(1.0 + sigmas[i] ** 2.0), sigmas[i], sigmas[i + 1], (x - denoised) / sigmas[i], noise_sampler)
+        x.copy_(step_function(x / torch.sqrt(1.0 + sigmas[i] ** 2.0), sigmas[i], sigmas[i + 1], (x - denoised) / sigmas[i], noise_sampler))
         if sigmas[i + 1] != 0:
-            x *= torch.sqrt(1.0 + sigmas[i + 1] ** 2.0)
+            x.mul_(torch.sqrt(1.0 + sigmas[i + 1] ** 2.0))
     return x
 
 
