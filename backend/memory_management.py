@@ -1207,3 +1207,13 @@ def soft_empty_cache(force=False):
 
 def unload_all_models():
     free_memory(1e30, get_torch_device(), free_all=True)
+
+
+def load_lora_model(model, lora_weights):
+    model.lora_loader.refresh(lora_weights)
+    return model
+
+
+def unload_lora_model(model):
+    model.lora_loader.refresh({})
+    return model

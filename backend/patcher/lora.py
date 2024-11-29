@@ -277,6 +277,10 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
     if weight_dtype_backup is not None:
         weight = weight.to(dtype=weight_dtype_backup)
 
+    # Release memory
+    del patches
+    torch.cuda.empty_cache()
+
     return weight
 
 
@@ -405,4 +409,9 @@ class LoraLoader:
 
         set_parameter_devices(self.model, parameter_devices=parameter_devices)
         self.loaded_hash = hashes
+
+        # Cleanup old patches
+        del all_patches
+        torch.cuda.empty_cache()
+
         return
