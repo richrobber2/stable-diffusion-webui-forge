@@ -131,10 +131,12 @@ class ClassicTextProcessingEngine:
         outputs = self.text_encoder.transformer(tokens, output_hidden_states=True)
 
         layer_id = - max(self.clip_skip, self.minimal_clip_skip)
+        # Get hidden states and modify in-place since we don't need the original during inference
         z = outputs.hidden_states[layer_id]
 
         if self.final_layer_norm:
-            z = self.text_encoder.transformer.text_model.final_layer_norm(z)
+            # Perform layer norm in-place as we don't need the pre-normalized values
+            self.text_encoder.transformer.text_model.final_layer_norm(z, inplace=True)
 
         if self.return_pooled:
             pooled_output = outputs.pooler_output
