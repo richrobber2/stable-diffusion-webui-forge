@@ -9,7 +9,7 @@ from modules import shared
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / sigma
+    return (x - denoised).div_(sigma)  # In-place division
 
 
 k_diffusion.sampling.to_d = to_d
@@ -27,18 +27,17 @@ class Scheduler:
 
 
 def uniform(n, sigma_min, sigma_max, inner_model, device):
-    return inner_model.get_sigmas(n).to(device)
+    sigmas = inner_model.get_sigmas(n).to(device)
+    return sigmas  # No change needed
 
 
 def sgm_uniform(n, sigma_min, sigma_max, inner_model, device):
-    start = inner_model.sigma_to_t(torch.tensor(sigma_max))
-    end = inner_model.sigma_to_t(torch.tensor(sigma_min))
-    sigs = [
-        inner_model.t_to_sigma(ts)
-        for ts in torch.linspace(start, end, n + 1)[:-1]
-    ]
-    sigs += [0.0]
-    return torch.FloatTensor(sigs).to(device)
+    start = inner_model.sigma_to_t(torch.tensor(sigma_max, device=device))
+    end = inner_model.sigma_to_t(torch.tensor(sigma_min, device=device))
+    timesteps = torch.linspace(start, end, n + 1, device=device)[:-1]
+    sigs = inner_model.t_to_sigma(timesteps)
+    sigs = torch.cat((sigs, sigs.new_tensor([0.0])))
+    return sigs
 
 
 def get_align_your_steps_sigmas(n, sigma_min, sigma_max, device):
@@ -63,11 +62,11 @@ def get_align_your_steps_sigmas(n, sigma_min, sigma_max, device):
         sigmas = [14.615, 6.475, 3.861, 2.697, 1.886, 1.396, 0.963, 0.652, 0.399, 0.152, 0.029]
 
     if n != len(sigmas):
-        sigmas = np.append(loglinear_interp(sigmas, n), [0.0])
+        sigmas = np.append(loglinear_interp(sigmas, n), 0.0)
     else:
         sigmas.append(0.0)
 
-    return torch.FloatTensor(sigmas).to(device)
+    return torch.from_numpy(sigmas).to(device)
 
 
 def kl_optimal(n, sigma_min, sigma_max, device):
@@ -88,20 +87,17 @@ def simple_scheduler(n, sigma_min, sigma_max, inner_model, device):
 
 
 def normal_scheduler(n, sigma_min, sigma_max, inner_model, device, sgm=False, floor=False):
-    start = inner_model.sigma_to_t(torch.tensor(sigma_max))
-    end = inner_model.sigma_to_t(torch.tensor(sigma_min))
+    start = inner_model.sigma_to_t(torch.tensor(sigma_max, device=device))
+    end = inner_model.sigma_to_t(torch.tensor(sigma_min, device=device))
 
     if sgm:
-        timesteps = torch.linspace(start, end, n + 1)[:-1]
+        timesteps = torch.linspace(start, end, n + 1, device=device)[:-1]
     else:
-        timesteps = torch.linspace(start, end, n)
+        timesteps = torch.linspace(start, end, n, device=device)
 
-    sigs = []
-    for x in range(len(timesteps)):
-        ts = timesteps[x]
-        sigs.append(inner_model.t_to_sigma(ts))
-    sigs += [0.0]
-    return torch.FloatTensor(sigs).to(device)
+    sigs = inner_model.t_to_sigma(timesteps)
+    sigs = torch.cat((sigs, sigs.new_tensor([0.0])))
+    return sigs
 
 
 def ddim_scheduler(n, sigma_min, sigma_max, inner_model, device):
@@ -121,10 +117,11 @@ def beta_scheduler(n, sigma_min, sigma_max, inner_model, device):
     alpha = shared.opts.beta_dist_alpha
     beta = shared.opts.beta_dist_beta
     timesteps = 1 - np.linspace(0, 1, n)
-    timesteps = [stats.beta.ppf(x, alpha, beta) for x in timesteps]
-    sigmas = [sigma_min + (x * (sigma_max-sigma_min)) for x in timesteps]
-    sigmas += [0.0]
-    return torch.FloatTensor(sigmas).to(device)
+    timesteps = stats.beta.ppf(timesteps, alpha, beta)
+    sigmas = sigma_min + (timesteps * (sigma_max - sigma_min))
+    sigmas = np.append(sigmas, 0.0)
+    sigmas = torch.from_numpy(sigmas).to(device)
+    return sigmas
 
 
 def turbo_scheduler(n, sigma_min, sigma_max, inner_model, device):
