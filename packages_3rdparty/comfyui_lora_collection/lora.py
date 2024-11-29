@@ -48,7 +48,11 @@ def load_lora(lora, to_load):
         """Helper to get value from lora dict and track loaded keys"""
         if key in lora:
             loaded_keys.add(key)
-            return lora[key]
+            # Add in-place operation for tensor values
+            val = lora[key]
+            if hasattr(val, 'contiguous_'):
+                val.contiguous_() # Make tensor contiguous in-place
+            return val
         return default
 
     for x in to_load:
@@ -63,11 +67,20 @@ def load_lora(lora, to_load):
             if A_name in lora:
                 B_name = f"{x}.{up_pattern.replace('up', 'down').replace('B', 'A')}"
                 mid_name = f"{x}.lora_mid.weight" if "lora_up" in up_pattern else None
+
+                # Get tensors and make them contiguous in-place
+                up_weight = lora[A_name]
+                down_weight = lora[B_name]
+                if hasattr(up_weight, 'contiguous_'):
+                    up_weight.contiguous_()
+                if hasattr(down_weight, 'contiguous_'):
+                    down_weight.contiguous_()
+
                 mid = get_value_and_track(mid_name) if mid_name else None
 
                 patch_dict[to_load[x]] = ("lora", (
-                    lora[A_name],
-                    lora[B_name],
+                    up_weight,
+                    down_weight,
                     alpha,
                     mid,
                     dora_scale
