@@ -476,7 +476,7 @@ class LoadedModel:
             for m in gpu_modules_only_extras:
                 m.prev_parameters_manual_cast = m.parameters_manual_cast
                 m.parameters_manual_cast = True
-                module_move(m, device=self.device, recursive=False, excluded_pattens=['weight'])
+                module_move(m, device=self.device, recursive=False, excluded_patterns=['weight'])  # Fix typo here
                 if hasattr(m, 'weight') and m.weight is not None:
                     if pin_memory:
                         m.weight = utils.tensor2parameter(m.weight.to(self.model.offload_device).pin_memory())
@@ -923,11 +923,8 @@ def cast_to_device(tensor, device, dtype, copy=False):
 
     non_blocking = device_should_use_non_blocking(device)
 
-    if device_supports_cast:
-        tensor.to_(device, dtype=dtype, non_blocking=non_blocking)
-    else:
-        tensor = tensor.to(device, dtype=dtype, non_blocking=non_blocking)
-    return tensor
+    # Remove in-place operation attempt and always use to()
+    return tensor.to(device=device, dtype=dtype, non_blocking=non_blocking)
 
 
 def xformers_enabled():
