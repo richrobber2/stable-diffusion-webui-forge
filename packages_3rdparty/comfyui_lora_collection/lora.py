@@ -64,10 +64,10 @@ def load_lora(lora, to_load):
                 B_name = f"{x}.{up_pattern.replace('up', 'down').replace('B', 'A')}"
                 mid_name = f"{x}.lora_mid.weight" if "lora_up" in up_pattern else None
                 mid = get_value_and_track(mid_name) if mid_name else None
-                
+
                 patch_dict[to_load[x]] = ("lora", (
-                    lora[A_name], 
-                    lora[B_name], 
+                    lora[A_name],
+                    lora[B_name],
                     alpha,
                     mid,
                     dora_scale
@@ -85,7 +85,7 @@ def load_lora(lora, to_load):
         if all(k in lora for k in loha_keys):
             hada_t1 = get_value_and_track(f"{x}.hada_t1")
             hada_t2 = get_value_and_track(f"{x}.hada_t2")
-            
+
             patch_dict[to_load[x]] = ("loha", (
                 lora[f"{x}.hada_w1_a"],
                 lora[f"{x}.hada_w1_b"],
@@ -108,7 +108,7 @@ def load_lora(lora, to_load):
             'w2_b': get_value_and_track(f"{x}.lokr_w2_b"),
             't2': get_value_and_track(f"{x}.lokr_t2")
         }
-        
+
         if any(v is not None for v in lokr_components.values()):
             patch_dict[to_load[x]] = ("lokr", (
                 lokr_components['w1'],
