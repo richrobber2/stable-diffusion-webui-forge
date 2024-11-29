@@ -89,6 +89,12 @@ class NetworkModuleLora(network.NetworkModule):
         self.up_model.to(device=devices.device)
         self.down_model.to(device=devices.device)
 
-        return y + self.up_model(self.down_model(x)) * self.multiplier() * self.calc_scale()
+        # Compute without in-place operations since they're not supported in all contexts
+        down = self.down_model(x)
+        up = self.up_model(down)
+        scale = self.multiplier() * self.calc_scale()
+        result = y + (up * scale)
+
+        return result
 
 
