@@ -23,14 +23,14 @@ def restart_sampler(model, x, sigmas, extra_args=None, callback=None, disable=No
         dt = new_sigma - old_sigma
         if new_sigma == 0 or not second_order:
             # Euler method
-            x = x + d * dt
+            x.add_(d * dt)
         else:
             # Heun's method
             x_2 = x + d * dt
             denoised_2 = model(x_2, new_sigma * s_in, **extra_args)
             d_2 = to_d(x_2, new_sigma, denoised_2)
             d_prime = (d + d_2) / 2
-            x = x + d_prime * dt
+            x.add_(d_prime * dt)
         step_id += 1
         return x
 
@@ -67,7 +67,7 @@ def restart_sampler(model, x, sigmas, extra_args=None, callback=None, disable=No
         if last_sigma is None:
             last_sigma = old_sigma
         elif last_sigma < old_sigma:
-            x = x + k_diffusion.sampling.torch.randn_like(x) * s_noise * (old_sigma ** 2 - last_sigma ** 2) ** 0.5
+            x.add_(k_diffusion.sampling.torch.randn_like(x) * s_noise * (old_sigma ** 2 - last_sigma ** 2) ** 0.5)
         x = heun_step(x, old_sigma, new_sigma)
         last_sigma = new_sigma
 
