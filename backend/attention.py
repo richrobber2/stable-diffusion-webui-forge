@@ -62,15 +62,15 @@ def attention_basic(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
         # Dynamic scale based on head dimension and precision
         scale = 1.0 / math.sqrt(dim_head + (1e-8 if attn_precision == torch.float32 else 1e-5))
 
-        # Direct reshape without contiguous for speed
+        # In-place reshape operations
         if skip_reshape:
-            q = q.reshape(b * heads, -1, dim_head)
-            k = k.reshape(b * heads, -1, dim_head)
-            v = v.reshape(b * heads, -1, dim_head)
+            q.reshape_(b * heads, -1, dim_head)
+            k.reshape_(b * heads, -1, dim_head)
+            v.reshape_(b * heads, -1, dim_head)
         else:
-            q = q.view(b, -1, heads, dim_head).permute(0, 2, 1, 3).reshape(b * heads, -1, dim_head)
-            k = k.view(b, -1, heads, dim_head).permute(0, 2, 1, 3).reshape(b * heads, -1, dim_head)
-            v = v.view(b, -1, heads, dim_head).permute(0, 2, 1, 3).reshape(b * heads, -1, dim_head)
+            q.view_(b, -1, heads, dim_head).permute_(0, 2, 1, 3).reshape_(b * heads, -1, dim_head)
+            k.view_(b, -1, heads, dim_head).permute_(0, 2, 1, 3).reshape_(b * heads, -1, dim_head)
+            v.view_(b, -1, heads, dim_head).permute_(0, 2, 1, 3).reshape_(b * heads, -1, dim_head)
 
         # Optimize computation for different precisions
         if attn_precision == torch.float32:
@@ -250,7 +250,10 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
                 bs = 1
             else:
                 bs = mask.shape[0]
-            mask = mask.reshape(bs, -1, mask.shape[-2], mask.shape[-1]).expand(b, heads, -1, -1).reshape(-1, mask.shape[-2], mask.shape[-1])
+            # In-place mask reshape
+            mask = mask.reshape(bs, -1, mask.shape[-2], mask.shape[-1])
+            mask = mask.expand(b, heads, -1, -1)
+            mask = mask.reshape(-1, mask.shape[-2], mask.shape[-1])
 
         # Smart memory management
         mem_free_total = memory_management.get_free_memory(q.device)
@@ -260,10 +263,10 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
             q.element_size(),
             heads
         )
-        
+
         # Adaptive step calculation
         steps = max(1, (q.shape[1] + chunk_size - 1) // chunk_size)
-        
+
         # Pre-allocate buffers for efficiency
         if steps > 1:
             s1_buffer = torch.empty(
@@ -288,13 +291,13 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
 
                     if mask is not None:
                         if len(mask.shape) == 2:
-                            s1 += mask[i:end]
+                            s1.add_(mask[i:end])  # In-place add
                         else:
-                            s1 += mask[:, i:end]
+                            s1.add_(mask[:, i:end])  # In-place add
 
-                    s2 = s1.softmax(dim=-1).to(v.dtype)
+                    # In-place softmax
+                    s2 = s1.softmax_(dim=-1).to(v.dtype)
                     del s1
-                    first_op_done = True
 
                     r1[:, i:end].add_(torch.einsum('b i j, b j d -> b i d', s2, v))
                     del s2
