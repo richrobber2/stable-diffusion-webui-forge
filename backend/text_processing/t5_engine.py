@@ -87,15 +87,15 @@ class T5TextProcessingEngine:
             nonlocal chunk
 
             if chunk.tokens:  # Only process if there are tokens
-                chunk.tokens = chunk.tokens + [self.id_end]
-                chunk.multipliers = chunk.multipliers + [1.0]
+                chunk.tokens.append(self.id_end)
+                chunk.multipliers.append(1.0)
                 current_chunk_length = len(chunk.tokens)
                 token_count += current_chunk_length
 
                 remaining_count = self.min_length - current_chunk_length
                 if remaining_count > 0:
-                    chunk.tokens += [self.id_pad] * remaining_count
-                    chunk.multipliers += [1.0] * remaining_count
+                    chunk.tokens.extend([self.id_pad] * remaining_count)
+                    chunk.multipliers.extend([1.0] * remaining_count)
 
                 chunks.append(chunk)
 
