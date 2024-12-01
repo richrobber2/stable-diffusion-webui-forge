@@ -72,8 +72,9 @@ def get_align_your_steps_sigmas(n, sigma_min, sigma_max, device):
 def kl_optimal(n, sigma_min, sigma_max, device):
     alpha_min = torch.arctan(torch.tensor(sigma_min, device=device))
     alpha_max = torch.arctan(torch.tensor(sigma_max, device=device))
-    step_indices = torch.arange(n + 1, device=device)
-    sigmas = torch.tan(step_indices / n * alpha_min + (1.0 - step_indices / n) * alpha_max)
+    step_indices = torch.arange(n + 1, device=device, dtype=torch.float32)
+    step_indices.div_(n)  # In-place division
+    sigmas = torch.tan(step_indices * alpha_min + (1.0 - step_indices).mul_(alpha_max - alpha_min).add_(alpha_min))
     return sigmas
 
 
@@ -91,12 +92,13 @@ def normal_scheduler(n, sigma_min, sigma_max, inner_model, device, sgm=False, fl
     end = inner_model.sigma_to_t(torch.tensor(sigma_min, device=device))
 
     if sgm:
-        timesteps = torch.linspace(start, end, n + 1, device=device)[:-1]
+        timesteps = torch.linspace(start, end, n + 1, device=device)
+        timesteps = timesteps[:-1]
     else:
         timesteps = torch.linspace(start, end, n, device=device)
 
     sigs = inner_model.t_to_sigma(timesteps)
-    sigs = torch.cat((sigs, sigs.new_tensor([0.0])))
+    sigs = torch.cat((sigs, sigs.new_zeros(1)))  # Use in-place new_zeros
     return sigs
 
 
