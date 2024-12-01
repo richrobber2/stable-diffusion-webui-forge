@@ -156,7 +156,7 @@ class Encoder(nn.Module):
             attn = nn.ModuleList()
             block_in = ch * in_ch_mult[i_level]
             block_out = ch * ch_mult[i_level]
-            for i_block in range(self.num_res_blocks):
+            for _ in range(self.num_res_blocks):
                 block.append(ResnetBlock(in_channels=block_in, out_channels=block_out, temb_channels=self.temb_ch, dropout=dropout))
                 block_in = block_out
                 if curr_res in attn_resolutions:
@@ -213,7 +213,9 @@ class Decoder(nn.Module):
         block_in = ch * ch_mult[self.num_resolutions - 1]
         curr_res = resolution // 2 ** (self.num_resolutions - 1)
         self.z_shape = (1, z_channels, curr_res, curr_res)
-        print("Working with z of shape {} = {} dimensions.".format(self.z_shape, np.prod(self.z_shape)))
+        print(
+            f"Working with z of shape {self.z_shape} = {np.prod(self.z_shape)} dimensions."
+        )
 
         self.conv_in = nn.Conv2d(z_channels, block_in, kernel_size=3, stride=1, padding=1)
 
@@ -227,7 +229,7 @@ class Decoder(nn.Module):
             block = nn.ModuleList()
             attn = nn.ModuleList()
             block_out = ch * ch_mult[i_level]
-            for i_block in range(self.num_res_blocks + 1):
+            for _ in range(self.num_res_blocks + 1):
                 block.append(ResnetBlock(in_channels=block_in, out_channels=block_out, temb_channels=self.temb_ch, dropout=dropout))
                 block_in = block_out
                 if curr_res in attn_resolutions:
@@ -295,17 +297,13 @@ class IntegratedAutoencoderKL(nn.Module, ConfigMixin):
             z = self.quant_conv(z)
 
         posterior = DiagonalGaussianDistribution(z)
-        if regulation is not None:
-            return regulation(posterior)
-        else:
-            return posterior.sample()
+        return regulation(posterior) if regulation is not None else posterior.sample()
 
     def decode(self, z):
         if self.post_quant_conv is not None:
             z = self.post_quant_conv(z)
 
-        x = self.decoder(z)
-        return x
+        return self.decoder(z)
 
     def process_in(self, latent):
         return (latent - self.shift_factor) * self.scaling_factor
