@@ -12,17 +12,16 @@ import modules.images
 from modules.ui_components import ToolButton
 import modules.infotext_utils as parameters_copypaste
 
+from contextlib import suppress
 folder_symbol = '\U0001f4c2'  # 📂
 refresh_symbol = '\U0001f504'  # 🔄
 
 def update_generation_info(generation_info, html_info, img_index):
-    try:
+    with suppress(Exception):
         generation_info = json.loads(generation_info)
         if img_index < 0 or img_index >= len(generation_info["infotexts"]):
             return html_info, gr.update(), html_info
         return plaintext_to_html(generation_info["infotexts"][img_index]), gr.update(), generation_info["infotexts"][img_index]
-    except Exception:
-        pass
     # if the json parse or anything else fails, just return the old html_info
     return html_info, gr.update(), html_info
 
@@ -165,14 +164,11 @@ def create_output_panel(tabname, outdir, toprow=None):
         if shared.cmd_opts.hide_ui_dir_config:
             return
 
-        try:
+        with suppress(Exception):
             if 'Sub' in shared.opts.open_dir_button_choice:
                 image_dir = os.path.split(images[index]["name"].rsplit('?', 1)[0])[0]
                 if 'temp' in shared.opts.open_dir_button_choice or not ui_tempdir.is_gradio_temp_path(image_dir):
                     f = image_dir
-        except Exception:
-            pass
-
         util.open_folder(f)
 
     with gr.Column(elem_id=f"{tabname}_results"):
@@ -218,7 +214,7 @@ def create_output_panel(tabname, outdir, toprow=None):
 
                     res.generation_info = gr.Textbox(visible=False, elem_id=f'generation_info_{tabname}')
                     res.infotext_plaintext = gr.Textbox(visible=False, elem_id=f'infotext_plaintext_{tabname}')
-                    if tabname == 'txt2img' or tabname == 'img2img':
+                    if tabname in ['txt2img', 'img2img']:
                         generation_info_button = gr.Button(visible=False, elem_id=f"{tabname}_generation_info_button")
                         generation_info_button.click(
                             fn=update_generation_info,
