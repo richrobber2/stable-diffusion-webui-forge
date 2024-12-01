@@ -84,7 +84,6 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         cond_l = self.text_processing_engine_l(prompt)
         cond_g, clip_pooled = self.text_processing_engine_g(prompt)
 
-        # Ensure proper dimensions
         if cond_l.dim() != 3 or cond_g.dim() != 3:
             raise ValueError("Invalid conditioning tensor dimensions")
 
@@ -92,28 +91,26 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         height = getattr(prompt, 'height', 1024) or 1024
         is_negative_prompt = getattr(prompt, 'is_negative_prompt', False)
 
-        # Optimize tensor creation by stacking
-        embedding_values = torch.tensor([
-            height, width, 0, 0,  # crop_h, crop_w
-            height, width         # target_height, target_width
-        ], device=clip_pooled.device)
+        # Optimize tensor creation by using torch.empty and in-place assignment
+        embedding_values = torch.empty(6, 1, device=clip_pooled.device)
+        embedding_values[0].fill_(height)
+        embedding_values[1].fill_(width)
+        embedding_values[2].fill_(0)
+        embedding_values[3].fill_(0)
+        embedding_values[4].fill_(height)
+        embedding_values[5].fill_(width)
 
-        # More efficient embedding computation
-        embedded = self.embedder(embedding_values.unsqueeze(1))
+        embedded = self.embedder(embedding_values)
         flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
 
         if is_negative_prompt and all(x == '' for x in prompt):
-            # Optimize zero tensor creation
             zeros = torch.zeros_like
             clip_pooled, cond_l, cond_g = map(zeros, (clip_pooled, cond_l, cond_g))
 
-        # Optimize concatenation
-        cond = {
+        return {
             'crossattn': torch.cat([cond_l, cond_g], dim=2),
-            'vector': torch.cat([clip_pooled, flat], dim=1)
+            'vector': torch.cat([clip_pooled, flat], dim=1),
         }
-
-        return cond
 
     @torch.inference_mode()
     def get_prompt_lengths_on_ui(self, prompt):
@@ -122,9 +119,8 @@ class StableDiffusionXL(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_first_stage(self, x):
-        # Use in-place operations for normalization
         x = x.movedim(1, -1)
-        x.mul_(0.5).add_(0.5)  # in-place version of * 0.5 + 0.5
+        x.mul_(0.5).add_(0.5)  # in-place operations
         sample = self.forge_objects.vae.encode(x)
         return self.forge_objects.vae.first_stage_model.process_in(sample).to(x)
 
@@ -133,6 +129,5 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         processed = self.forge_objects.vae.first_stage_model.process_out(x)
         decoded = self.forge_objects.vae.decode(processed)
         decoded = decoded.movedim(-1, 1)
-        # Use in-place operations for denormalization
-        decoded.mul_(2.0).sub_(1.0)  # in-place version of * 2.0 - 1.0
+        decoded.mul_(2.0).sub_(1.0)  # in-place operations
         return decoded.to(x)
