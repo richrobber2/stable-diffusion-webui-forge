@@ -17,10 +17,10 @@ def set_model_options_patch_replace(model_options, patch, name, block_name, numb
 
     if "patches_replace" not in to:
         to["patches_replace"] = {}
-    
+
     if name not in to["patches_replace"]:
         to["patches_replace"][name] = {}
-    
+
     if transformer_index is not None:
         block = (block_name, number, transformer_index)
     else:
@@ -94,7 +94,7 @@ class ModelPatcher:
         this_patches = {}
 
         p = set()
-        model_keys = set(k for k, _ in self.model.named_parameters())
+        model_keys = {k for k, _ in self.model.named_parameters()}
 
         for k in patches:
             offset = None
@@ -235,13 +235,14 @@ class ModelPatcher:
     def get_key_patches(self, filter_prefix=None):
         memory_management.unload_model_clones(self)
         model_sd = self.model_state_dict(filter_prefix)
-        p = {}
-        for k in model_sd:
-            if k in self.patches:
-                p[k] = [model_sd[k]] + self.patches[k]
-            else:
-                p[k] = (model_sd[k],)
-        return p
+        return {
+            k: (
+                [model_sd[k]] + self.patches[k]
+                if k in self.patches
+                else (model_sd[k],)
+            )
+            for k in model_sd
+        }
 
     def model_state_dict(self, filter_prefix=None):
         sd = self.model.state_dict()
