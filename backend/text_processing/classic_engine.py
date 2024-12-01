@@ -32,7 +32,11 @@ class CLIPEmbeddingForTextualInversion(torch.nn.Module):
 
         inputs_embeds = self.wrapped(input_ids)
 
-        if batch_fixes is None or len(batch_fixes) == 0 or max([len(x) for x in batch_fixes]) == 0:
+        if (
+            batch_fixes is None
+            or len(batch_fixes) == 0
+            or max(len(x) for x in batch_fixes) == 0
+        ):
             return inputs_embeds
 
         vecs = []
@@ -41,7 +45,13 @@ class CLIPEmbeddingForTextualInversion(torch.nn.Module):
                 emb = embedding.vec[self.textual_inversion_key] if isinstance(embedding.vec, dict) else embedding.vec
                 emb = emb.to(inputs_embeds)
                 emb_len = min(tensor.shape[0] - offset - 1, emb.shape[0])
-                tensor = torch.cat([tensor[0:offset + 1], emb[0:emb_len], tensor[offset + 1 + emb_len:]]).to(dtype=inputs_embeds.dtype)
+                tensor = torch.cat(
+                    [
+                        tensor[: offset + 1],
+                        emb[:emb_len],
+                        tensor[offset + 1 + emb_len :],
+                    ]
+                ).to(dtype=inputs_embeds.dtype)
 
             vecs.append(tensor)
 
@@ -93,15 +103,10 @@ class ClassicTextProcessingEngine:
         for text, ident in tokens_with_parens:
             mult = 1.0
             for c in text:
-                if c == '[':
+                if c in ['[', ')']:
                     mult /= 1.1
-                if c == ']':
+                elif c in [']', '(']:
                     mult *= 1.1
-                if c == '(':
-                    mult *= 1.1
-                if c == ')':
-                    mult /= 1.1
-
             if mult != 1.0:
                 self.token_mults[ident] = mult
 
@@ -115,9 +120,9 @@ class ClassicTextProcessingEngine:
         return math.ceil(max(token_count, 1) / self.chunk_length) * self.chunk_length
 
     def tokenize(self, texts):
-        tokenized = self.tokenizer(texts, truncation=False, add_special_tokens=False)["input_ids"]
-
-        return tokenized
+        return self.tokenizer(texts, truncation=False, add_special_tokens=False)[
+            "input_ids"
+        ]
 
     def encode_with_transformers(self, tokens):
         target_device = memory_management.text_encoder_device()
@@ -159,11 +164,7 @@ class ClassicTextProcessingEngine:
         def next_chunk(is_last=False):
             nonlocal token_count, last_comma, chunk
 
-            if is_last:
-                token_count += len(chunk.tokens)
-            else:
-                token_count += self.chunk_length
-
+            token_count += len(chunk.tokens) if is_last else self.chunk_length
             # Calculate padding more efficiently
             to_add = max(0, self.chunk_length - len(chunk.tokens))
             if to_add > 0:
@@ -253,7 +254,7 @@ class ClassicTextProcessingEngine:
         batch_chunks, token_count = self.process_texts(texts)
 
         used_embeddings = {}
-        chunk_count = max([len(x) for x in batch_chunks])
+        chunk_count = max(len(x) for x in batch_chunks)
 
         zs = []
         for i in range(chunk_count):
@@ -275,7 +276,7 @@ class ClassicTextProcessingEngine:
         if used_embeddings:
             names = []
 
-            for name, embedding in used_embeddings.items():
+            for name in used_embeddings:
                 print(f'[Textual Inversion] Used Embedding [{name}] in CLIP of [{self.embedding_key}]')
                 names.append(name.replace(":", "").replace(",", ""))
 
