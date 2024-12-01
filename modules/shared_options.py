@@ -33,50 +33,153 @@ categories.register_category("system", "System")
 categories.register_category("postprocessing", "Postprocessing")
 categories.register_category("training", "Training")
 
-options_templates.update(options_section(('saving-images', "Saving images/grids", "saving"), {
-    "samples_save": OptionInfo(True, "Always save all generated images"),
-    "samples_format": OptionInfo('png', 'File format for images'),
-    "samples_filename_pattern": OptionInfo("", "Images filename pattern", component_args=hide_dirs).link("wiki", "https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Custom-Images-Filename-Name-and-Subdirectory"),
-    "save_images_add_number": OptionInfo(True, "Add number to filename when saving", component_args=hide_dirs),
-    "save_images_replace_action": OptionInfo("Replace", "Saving the image to an existing file", gr.Radio, {"choices": ["Replace", "Add number suffix"], **hide_dirs}),
-    "grid_save": OptionInfo(True, "Always save all generated image grids"),
-    "grid_format": OptionInfo('png', 'File format for grids'),
-    "grid_extended_filename": OptionInfo(False, "Add extended info (seed, prompt) to filename when saving grid"),
-    "grid_only_if_multiple": OptionInfo(True, "Do not save grids consisting of one picture"),
-    "grid_prevent_empty_spots": OptionInfo(False, "Prevent empty spots in grid (when set to autodetect)"),
-    "grid_zip_filename_pattern": OptionInfo("", "Archive filename pattern", component_args=hide_dirs).link("wiki", "https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Custom-Images-Filename-Name-and-Subdirectory"),
-    "n_rows": OptionInfo(-1, "Grid row count; use -1 for autodetect and 0 for it to be same as batch size", gr.Slider, {"minimum": -1, "maximum": 16, "step": 1}),
-    "font": OptionInfo("", "Font for image grids that have text"),
-    "grid_text_active_color": OptionInfo("#000000", "Text color for image grids", ui_components.FormColorPicker, {}),
-    "grid_text_inactive_color": OptionInfo("#999999", "Inactive text color for image grids", ui_components.FormColorPicker, {}),
-    "grid_background_color": OptionInfo("#ffffff", "Background color for image grids", ui_components.FormColorPicker, {}),
-
-    "save_images_before_face_restoration": OptionInfo(False, "Save a copy of image before doing face restoration."),
-    "save_images_before_highres_fix": OptionInfo(False, "Save a copy of image before applying highres fix."),
-    "save_images_before_color_correction": OptionInfo(False, "Save a copy of image before applying color correction to img2img results"),
-    "save_mask": OptionInfo(False, "For inpainting, save a copy of the greyscale mask"),
-    "save_mask_composite": OptionInfo(False, "For inpainting, save a masked composite"),
-    "jpeg_quality": OptionInfo(80, "Quality for saved jpeg and avif images", gr.Slider, {"minimum": 1, "maximum": 100, "step": 1}),
-    "webp_lossless": OptionInfo(False, "Use lossless compression for webp images"),
-    "export_for_4chan": OptionInfo(True, "Save copy of large images as JPG").info("if the file size is above the limit, or either width or height are above the limit"),
-    "img_downscale_threshold": OptionInfo(4.0, "File size limit for the above option, MB", gr.Number),
-    "target_side_length": OptionInfo(4000, "Width/height limit for the above option, in pixels", gr.Number),
-    "img_max_size_mp": OptionInfo(200, "Maximum image size", gr.Number).info("in megapixels"),
-
-    "use_original_name_batch": OptionInfo(True, "Use original name for output filename during batch process in extras tab"),
-    "use_upscaler_name_as_suffix": OptionInfo(False, "Use upscaler name as filename suffix in the extras tab"),
-    "save_selected_only": OptionInfo(True, "When using 'Save' button, only save a single selected image"),
-    "save_write_log_csv": OptionInfo(True, "Write log.csv when saving images using 'Save' button"),
-    "save_init_img": OptionInfo(False, "Save init images when using img2img"),
-
-    "temp_dir":  OptionInfo("", "Directory for temporary images; leave empty for default"),
-    "clean_temp_dir_at_start": OptionInfo(False, "Cleanup non-default temporary directory when starting webui"),
-
-    "save_incomplete_images": OptionInfo(False, "Save incomplete images").info("save images that has been interrupted in mid-generation; even if not saved, they will still show up in webui output."),
-
-    "notification_audio": OptionInfo(True, "Play notification sound after image generation").info("notification.mp3 should be present in the root directory").needs_reload_ui(),
-    "notification_volume": OptionInfo(100, "Notification sound volume", gr.Slider, {"minimum": 0, "maximum": 100, "step": 1}).info("in %"),
-}))
+options_templates |= options_section(
+    ('saving-images', "Saving images/grids", "saving"),
+    {
+        "samples_save": OptionInfo(True, "Always save all generated images"),
+        "samples_format": OptionInfo('png', 'File format for images'),
+        "samples_filename_pattern": OptionInfo(
+            "", "Images filename pattern", component_args=hide_dirs
+        ).link(
+            "wiki",
+            "https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Custom-Images-Filename-Name-and-Subdirectory",
+        ),
+        "save_images_add_number": OptionInfo(
+            True,
+            "Add number to filename when saving",
+            component_args=hide_dirs,
+        ),
+        "save_images_replace_action": OptionInfo(
+            "Replace",
+            "Saving the image to an existing file",
+            gr.Radio,
+            {"choices": ["Replace", "Add number suffix"], **hide_dirs},
+        ),
+        "grid_save": OptionInfo(True, "Always save all generated image grids"),
+        "grid_format": OptionInfo('png', 'File format for grids'),
+        "grid_extended_filename": OptionInfo(
+            False,
+            "Add extended info (seed, prompt) to filename when saving grid",
+        ),
+        "grid_only_if_multiple": OptionInfo(
+            True, "Do not save grids consisting of one picture"
+        ),
+        "grid_prevent_empty_spots": OptionInfo(
+            False, "Prevent empty spots in grid (when set to autodetect)"
+        ),
+        "grid_zip_filename_pattern": OptionInfo(
+            "", "Archive filename pattern", component_args=hide_dirs
+        ).link(
+            "wiki",
+            "https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Custom-Images-Filename-Name-and-Subdirectory",
+        ),
+        "n_rows": OptionInfo(
+            -1,
+            "Grid row count; use -1 for autodetect and 0 for it to be same as batch size",
+            gr.Slider,
+            {"minimum": -1, "maximum": 16, "step": 1},
+        ),
+        "font": OptionInfo("", "Font for image grids that have text"),
+        "grid_text_active_color": OptionInfo(
+            "#000000",
+            "Text color for image grids",
+            ui_components.FormColorPicker,
+            {},
+        ),
+        "grid_text_inactive_color": OptionInfo(
+            "#999999",
+            "Inactive text color for image grids",
+            ui_components.FormColorPicker,
+            {},
+        ),
+        "grid_background_color": OptionInfo(
+            "#ffffff",
+            "Background color for image grids",
+            ui_components.FormColorPicker,
+            {},
+        ),
+        "save_images_before_face_restoration": OptionInfo(
+            False, "Save a copy of image before doing face restoration."
+        ),
+        "save_images_before_highres_fix": OptionInfo(
+            False, "Save a copy of image before applying highres fix."
+        ),
+        "save_images_before_color_correction": OptionInfo(
+            False,
+            "Save a copy of image before applying color correction to img2img results",
+        ),
+        "save_mask": OptionInfo(
+            False, "For inpainting, save a copy of the greyscale mask"
+        ),
+        "save_mask_composite": OptionInfo(
+            False, "For inpainting, save a masked composite"
+        ),
+        "jpeg_quality": OptionInfo(
+            80,
+            "Quality for saved jpeg and avif images",
+            gr.Slider,
+            {"minimum": 1, "maximum": 100, "step": 1},
+        ),
+        "webp_lossless": OptionInfo(
+            False, "Use lossless compression for webp images"
+        ),
+        "export_for_4chan": OptionInfo(
+            True, "Save copy of large images as JPG"
+        ).info(
+            "if the file size is above the limit, or either width or height are above the limit"
+        ),
+        "img_downscale_threshold": OptionInfo(
+            4.0, "File size limit for the above option, MB", gr.Number
+        ),
+        "target_side_length": OptionInfo(
+            4000,
+            "Width/height limit for the above option, in pixels",
+            gr.Number,
+        ),
+        "img_max_size_mp": OptionInfo(
+            200, "Maximum image size", gr.Number
+        ).info("in megapixels"),
+        "use_original_name_batch": OptionInfo(
+            True,
+            "Use original name for output filename during batch process in extras tab",
+        ),
+        "use_upscaler_name_as_suffix": OptionInfo(
+            False, "Use upscaler name as filename suffix in the extras tab"
+        ),
+        "save_selected_only": OptionInfo(
+            True, "When using 'Save' button, only save a single selected image"
+        ),
+        "save_write_log_csv": OptionInfo(
+            True, "Write log.csv when saving images using 'Save' button"
+        ),
+        "save_init_img": OptionInfo(
+            False, "Save init images when using img2img"
+        ),
+        "temp_dir": OptionInfo(
+            "", "Directory for temporary images; leave empty for default"
+        ),
+        "clean_temp_dir_at_start": OptionInfo(
+            False,
+            "Cleanup non-default temporary directory when starting webui",
+        ),
+        "save_incomplete_images": OptionInfo(
+            False, "Save incomplete images"
+        ).info(
+            "save images that has been interrupted in mid-generation; even if not saved, they will still show up in webui output."
+        ),
+        "notification_audio": OptionInfo(
+            True, "Play notification sound after image generation"
+        )
+        .info("notification.mp3 should be present in the root directory")
+        .needs_reload_ui(),
+        "notification_volume": OptionInfo(
+            100,
+            "Notification sound volume",
+            gr.Slider,
+            {"minimum": 0, "maximum": 100, "step": 1},
+        ).info("in %"),
+    },
+)
 
 options_templates.update(options_section(('saving-paths', "Paths for saving", "saving"), {
     "outdir_samples": OptionInfo("", "Output directory for images; if empty, defaults to three directories below", component_args=hide_dirs),
