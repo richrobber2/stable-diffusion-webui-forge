@@ -42,10 +42,14 @@ def filter_state_dict_with_prefix(sd, prefix, new_prefix=''):
 
 
 def try_filter_state_dict(sd, prefix_list, new_prefix=''):
-    for prefix in prefix_list:
-        if state_dict_has(sd, prefix):
-            return filter_state_dict_with_prefix(sd, prefix, new_prefix)
-    return {}
+    return next(
+        (
+            filter_state_dict_with_prefix(sd, prefix, new_prefix)
+            for prefix in prefix_list
+            if state_dict_has(sd, prefix)
+        ),
+        {},
+    )
 
 
 def transformers_convert(sd, prefix_from, prefix_to, number):
@@ -106,12 +110,12 @@ def state_dict_key_replace(state_dict, keys_to_replace):
 
 
 def state_dict_prefix_replace(state_dict, replace_prefix, filter_keys=False):
-    if filter_keys:
-        out = {}
-    else:
-        out = state_dict
+    out = {} if filter_keys else state_dict
     for rp in replace_prefix:
-        replace = [(a, "{}{}".format(replace_prefix[rp], a[len(rp):])) for a in filter(lambda a: a.startswith(rp), state_dict.keys())]
+        replace = [
+            (a, f"{replace_prefix[rp]}{a[len(rp):]}")
+            for a in filter(lambda a: a.startswith(rp), state_dict.keys())
+        ]
         for x in replace:
             w = state_dict.pop(x[0])
             out[x[1]] = w
