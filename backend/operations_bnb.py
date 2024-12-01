@@ -114,30 +114,36 @@ class ForgeLoader4Bit(torch.nn.Module):
         quant_state = getattr(self.weight, "quant_state", None)
         if quant_state is not None:
             for k, v in quant_state.as_dict(packed=True).items():
-                destination[prefix + "weight." + k] = v if keep_vars else v.detach()
+                destination[f"{prefix}weight.{k}"] = v if keep_vars else v.detach()
         return
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        quant_state_keys = {k[len(prefix + "weight."):] for k in state_dict.keys() if k.startswith(prefix + "weight.")}
+        quant_state_keys = {
+            k[len(f"{prefix}weight.") :]
+            for k in state_dict.keys()
+            if k.startswith(f"{prefix}weight.")
+        }
 
         if any('bitsandbytes' in k for k in quant_state_keys):
-            quant_state_dict = {k: state_dict[prefix + "weight." + k] for k in quant_state_keys}
+            quant_state_dict = {
+                k: state_dict[f"{prefix}weight.{k}"] for k in quant_state_keys
+            }
 
             self.weight = ForgeParams4bit.from_prequantized(
-                data=state_dict[prefix + 'weight'],
+                data=state_dict[f'{prefix}weight'],
                 quantized_stats=quant_state_dict,
                 requires_grad=False,
                 device=self.dummy.device,
             )
 
-            if prefix + 'bias' in state_dict:
-                self.bias = torch.nn.Parameter(state_dict[prefix + 'bias'].to(self.dummy))
+            if f'{prefix}bias' in state_dict:
+                self.bias = torch.nn.Parameter(state_dict[f'{prefix}bias'].to(self.dummy))
 
             del self.dummy
         elif hasattr(self, 'dummy'):
-            if prefix + 'weight' in state_dict:
+            if f'{prefix}weight' in state_dict:
                 self.weight = ForgeParams4bit(
-                    state_dict[prefix + 'weight'].to(self.dummy),
+                    state_dict[f'{prefix}weight'].to(self.dummy),
                     requires_grad=False,
                     compress_statistics=False,
                     blocksize=64,
@@ -145,8 +151,8 @@ class ForgeLoader4Bit(torch.nn.Module):
                     quant_storage=torch.uint8,
                 )
 
-            if prefix + 'bias' in state_dict:
-                self.bias = torch.nn.Parameter(state_dict[prefix + 'bias'].to(self.dummy))
+            if f'{prefix}bias' in state_dict:
+                self.bias = torch.nn.Parameter(state_dict[f'{prefix}bias'].to(self.dummy))
 
             del self.dummy
         else:
