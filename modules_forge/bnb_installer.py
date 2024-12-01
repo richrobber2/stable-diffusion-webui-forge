@@ -18,4 +18,4 @@ def try_install_bnb():
                 f"bitsandbytes=={target_bitsandbytes_version}",
             )
     except Exception as e:
-        print(f'Cannot install bitsandbytes. Skipped.')
+        print('Cannot install bitsandbytes. Skipped.')
