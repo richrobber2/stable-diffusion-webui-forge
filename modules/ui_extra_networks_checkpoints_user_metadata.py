@@ -18,32 +18,23 @@ class CheckpointUserMetadataEditor(ui_extra_networks_user_metadata.UserMetadataE
         user_metadata["description"] = desc
         user_metadata["notes"] = notes
         user_metadata["vae_te"] = vae
-        user_metadata["sd_version_str"] = 'SdVersion.' + sd_version
+        user_metadata["sd_version_str"] = f'SdVersion.{sd_version}'
 
         self.write_user_metadata(name, user_metadata)
 
     def put_values_into_components(self, name):
         user_metadata = self.get_user_metadata(name)
         values = super().put_values_into_components(name)
-        
+
         vae = user_metadata.get('vae_te', None)
         if vae is None:     # fallback to old type
             vae = user_metadata.get('vae', None)
-            if vae is not None:
-                if isinstance(vae, str):
-                    vae = [vae]
+            if vae is not None and isinstance(vae, str):
+                vae = [vae]
 
         version = user_metadata.get('sd_version_str', '')
-        if version == '':
-            version = 'Unknown'
-        else:
-            version = version.replace('SdVersion.', '')
-
-        return [
-            *values[0:5],
-            vae,
-            version,
-        ]
+        version = 'Unknown' if version == '' else version.replace('SdVersion.', '')
+        return [*values[:5], vae, version]
 
     def create_editor(self):    #happens before main_entry.modules_list is filled
         modules_list = ['Built in']
