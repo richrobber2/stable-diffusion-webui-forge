@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import logging
 import os
@@ -32,7 +33,7 @@ def load_models(model_path: str, model_url: str = None, command_path: str = None
     """
     output = []
 
-    try:
+    with contextlib.suppress(Exception):
         places = []
 
         if command_path is not None and command_path != model_path:
@@ -55,14 +56,11 @@ def load_models(model_path: str, model_url: str = None, command_path: str = None
                 if full_path not in output:
                     output.append(full_path)
 
-        if model_url is not None and len(output) == 0:
+        if model_url is not None and not output:
             if download_name is not None:
                 output.append(load_file_from_url(model_url, model_dir=places[0], file_name=download_name, hash_prefix=hash_prefix))
             else:
                 output.append(model_url)
-
-    except Exception:
-        pass
 
     return output
 
@@ -84,11 +82,8 @@ def load_upscalers():
         if "_model.py" in file:
             model_name = file.replace("_model.py", "")
             full_model = f"modules.{model_name}_model"
-            try:
+            with contextlib.suppress(Exception):
                 importlib.import_module(full_model)
-            except Exception:
-                pass
-
     data = []
     commandline_options = vars(shared.cmd_opts)
 
@@ -104,7 +99,7 @@ def load_upscalers():
     for cls in reversed(used_classes.values()):
         name = cls.__name__
         cmd_name = f"{name.lower().replace('upscaler', '')}_models_path"
-        commandline_model_path = commandline_options.get(cmd_name, None)
+        commandline_model_path = commandline_options.get(cmd_name)
         scaler = cls(commandline_model_path)
         scaler.user_path = commandline_model_path
         scaler.model_download_path = commandline_model_path or scaler.model_path
@@ -113,7 +108,7 @@ def load_upscalers():
     shared.sd_upscalers = sorted(
         data,
         # Special case for UpscalerNone keeps it at the beginning of the list.
-        key=lambda x: x.name.lower() if not isinstance(x.scaler, (UpscalerNone, UpscalerLanczos, UpscalerNearest)) else ""
+        key=lambda x: "" if isinstance(x.scaler, (UpscalerNone, UpscalerLanczos, UpscalerNearest)) else x.name.lower()
     )
 
 # None: not loaded, False: failed to load, True: loaded
