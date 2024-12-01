@@ -63,9 +63,7 @@ class TAESDDecoder(nn.Module):
         super().__init__()
 
         if latent_channels is None:
-            if "taesd3" in str(decoder_path):
-                latent_channels = 16
-            elif "taef1" in str(decoder_path):
+            if "taesd3" in str(decoder_path) or "taef1" in str(decoder_path):
                 latent_channels = 16
             else:
                 latent_channels = 4
@@ -84,9 +82,7 @@ class TAESDEncoder(nn.Module):
         super().__init__()
 
         if latent_channels is None:
-            if "taesd3" in str(encoder_path):
-                latent_channels = 16
-            elif "taef1" in str(encoder_path):
+            if "taesd3" in str(encoder_path) or "taef1" in str(encoder_path):
                 latent_channels = 16
             else:
                 latent_channels = 4
@@ -117,18 +113,26 @@ def decoder_model():
     loaded_model = sd_vae_taesd_models.get(model_name)
 
     if loaded_model is None:
-        model_path = os.path.join(paths_internal.models_path, "VAE-taesd", model_name)
-        download_model(model_path, 'https://github.com/madebyollin/taesd/raw/main/' + model_name)
-
-        if os.path.exists(model_path):
-            loaded_model = TAESDDecoder(model_path)
-            loaded_model.eval()
-            loaded_model.to(devices.device, devices.dtype)
-            sd_vae_taesd_models[model_name] = loaded_model
-        else:
-            raise FileNotFoundError('TAESD model not found')
-
+        loaded_model = _extracted_from_decoder_model_(model_name)
     return loaded_model.decoder
+
+
+# TODO Rename this here and in `decoder_model`
+def _extracted_from_decoder_model_(model_name):
+    model_path = os.path.join(paths_internal.models_path, "VAE-taesd", model_name)
+    download_model(
+        model_path,
+        f'https://github.com/madebyollin/taesd/raw/main/{model_name}',
+    )
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError('TAESD model not found')
+
+    result = TAESDDecoder(model_path)
+    result.eval()
+    result.to(devices.device, devices.dtype)
+    sd_vae_taesd_models[model_name] = result
+    return result
 
 
 def encoder_model():
@@ -144,15 +148,23 @@ def encoder_model():
     loaded_model = sd_vae_taesd_models.get(model_name)
 
     if loaded_model is None:
-        model_path = os.path.join(paths_internal.models_path, "VAE-taesd", model_name)
-        download_model(model_path, 'https://github.com/madebyollin/taesd/raw/main/' + model_name)
-
-        if os.path.exists(model_path):
-            loaded_model = TAESDEncoder(model_path)
-            loaded_model.eval()
-            loaded_model.to(devices.device, devices.dtype)
-            sd_vae_taesd_models[model_name] = loaded_model
-        else:
-            raise FileNotFoundError('TAESD model not found')
-
+        loaded_model = _extracted_from_encoder_model_(model_name)
     return loaded_model.encoder
+
+
+# TODO Rename this here and in `encoder_model`
+def _extracted_from_encoder_model_(model_name):
+    model_path = os.path.join(paths_internal.models_path, "VAE-taesd", model_name)
+    download_model(
+        model_path,
+        f'https://github.com/madebyollin/taesd/raw/main/{model_name}',
+    )
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError('TAESD model not found')
+
+    result = TAESDEncoder(model_path)
+    result.eval()
+    result.to(devices.device, devices.dtype)
+    sd_vae_taesd_models[model_name] = result
+    return result
