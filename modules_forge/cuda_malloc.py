@@ -4,37 +4,36 @@ import importlib.util
 
 # https://github.com/comfyanonymous/ComfyUI/blob/master/cuda_malloc.py
 def get_gpu_names():
-    if os.name == 'nt':
-        import ctypes
-
-        # Define necessary C structures and types
-        class DISPLAY_DEVICEA(ctypes.Structure):
-            _fields_ = [
-                ('cb', ctypes.c_ulong),
-                ('DeviceName', ctypes.c_char * 32),
-                ('DeviceString', ctypes.c_char * 128),
-                ('StateFlags', ctypes.c_ulong),
-                ('DeviceID', ctypes.c_char * 128),
-                ('DeviceKey', ctypes.c_char * 128)
-            ]
-
-        # Load user32.dll
-        user32 = ctypes.windll.user32
-
-        # Call EnumDisplayDevicesA
-        def enum_display_devices():
-            device_info = DISPLAY_DEVICEA()
-            device_info.cb = ctypes.sizeof(device_info)
-            device_index = 0
-            gpu_names = set()
-
-            while user32.EnumDisplayDevicesA(None, device_index, ctypes.byref(device_info), 0):
-                device_index += 1
-                gpu_names.add(device_info.DeviceString.decode('utf-8'))
-            return gpu_names
-        return enum_display_devices()
-    else:
+    if os.name != 'nt':
         return set()
+    import ctypes
+
+    class DISPLAY_DEVICEA(ctypes.Structure):
+        _fields_ = [
+            ('cb', ctypes.c_ulong),
+            ('DeviceName', ctypes.c_char * 32),
+            ('DeviceString', ctypes.c_char * 128),
+            ('StateFlags', ctypes.c_ulong),
+            ('DeviceID', ctypes.c_char * 128),
+            ('DeviceKey', ctypes.c_char * 128)
+        ]
+
+    # Load user32.dll
+    user32 = ctypes.windll.user32
+
+    # Call EnumDisplayDevicesA
+    def enum_display_devices():
+        device_info = DISPLAY_DEVICEA()
+        device_info.cb = ctypes.sizeof(device_info)
+        device_index = 0
+        gpu_names = set()
+
+        while user32.EnumDisplayDevicesA(None, device_index, ctypes.byref(device_info), 0):
+            device_index += 1
+            gpu_names.add(device_info.DeviceString.decode('utf-8'))
+        return gpu_names
+
+    return enum_display_devices()
 
 
 blacklist = {"GeForce GTX TITAN X", "GeForce GTX 980", "GeForce GTX 970", "GeForce GTX 960", "GeForce GTX 950", "GeForce 945M",
