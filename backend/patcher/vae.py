@@ -29,12 +29,11 @@ def tiled_scale_multidim(samples, function, tile=(64, 64), overlap=8, upscale_am
             ps = function(s_in).to(output_device)
             mask = torch.ones_like(ps)
             feather = round(overlap * upscale_amount)
-            for t in range(feather):
-                for d in range(2, dims + 2):
-                    m = mask.narrow(d, t, 1)
-                    m *= ((1.0 / feather) * (t + 1))
-                    m = mask.narrow(d, mask.shape[d] - 1 - t, 1)
-                    m *= ((1.0 / feather) * (t + 1))
+            for t, d in itertools.product(range(feather), range(2, dims + 2)):
+                m = mask.narrow(d, t, 1)
+                m *= ((1.0 / feather) * (t + 1))
+                m = mask.narrow(d, mask.shape[d] - 1 - t, 1)
+                m *= ((1.0 / feather) * (t + 1))
 
             o = out
             o_d = out_div
@@ -107,11 +106,43 @@ class VAE:
         steps += samples.shape[0] * get_tiled_scale_steps(samples.shape[3], samples.shape[2], tile_x * 2, tile_y // 2, overlap)
 
         decode_fn = lambda a: (self.first_stage_model.decode(a.to(self.vae_dtype).to(self.device)) + 1.0).float()
-        output = torch.clamp(((tiled_scale(samples, decode_fn, tile_x // 2, tile_y * 2, overlap, upscale_amount=self.downscale_ratio, output_device=self.output_device) +
-                               tiled_scale(samples, decode_fn, tile_x * 2, tile_y // 2, overlap, upscale_amount=self.downscale_ratio, output_device=self.output_device) +
-                               tiled_scale(samples, decode_fn, tile_x, tile_y, overlap, upscale_amount=self.downscale_ratio, output_device=self.output_device))
-                              / 3.0) / 2.0, min=0.0, max=1.0)
-        return output
+        return torch.clamp(
+            (
+                (
+                    tiled_scale(
+                        samples,
+                        decode_fn,
+                        tile_x // 2,
+                        tile_y * 2,
+                        overlap,
+                        upscale_amount=self.downscale_ratio,
+                        output_device=self.output_device,
+                    )
+                    + tiled_scale(
+                        samples,
+                        decode_fn,
+                        tile_x * 2,
+                        tile_y // 2,
+                        overlap,
+                        upscale_amount=self.downscale_ratio,
+                        output_device=self.output_device,
+                    )
+                    + tiled_scale(
+                        samples,
+                        decode_fn,
+                        tile_x,
+                        tile_y,
+                        overlap,
+                        upscale_amount=self.downscale_ratio,
+                        output_device=self.output_device,
+                    )
+                )
+                / 3.0
+            )
+            / 2.0,
+            min=0.0,
+            max=1.0,
+        )
 
     def encode_tiled_(self, pixel_samples, tile_x=512, tile_y=512, overlap=64):
         steps = pixel_samples.shape[0] * get_tiled_scale_steps(pixel_samples.shape[3], pixel_samples.shape[2], tile_x, tile_y, overlap)
@@ -193,5 +224,6 @@ class VAE:
     def encode_tiled(self, pixel_samples, tile_x=512, tile_y=512, overlap=64):
         memory_management.load_model_gpu(self.patcher)
         pixel_samples = pixel_samples.movedim(-1, 1)
-        samples = self.encode_tiled_(pixel_samples, tile_x=tile_x, tile_y=tile_y, overlap=overlap)
-        return samples
+        return self.encode_tiled_(
+            pixel_samples, tile_x=tile_x, tile_y=tile_y, overlap=overlap
+        )
