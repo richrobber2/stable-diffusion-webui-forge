@@ -310,15 +310,24 @@ def split_state_dict(sd, additional_state_dicts: list = None):
 
 @torch.inference_mode()
 def forge_loader(sd, additional_state_dicts=None):
+    state_dicts, estimated_config = get_state_dicts_and_config(sd, additional_state_dicts)
+    repo_name = estimated_config.huggingface_repo
+    local_path = os.path.join(dir_path, 'huggingface', repo_name)
+    config = DiffusionPipeline.load_config(local_path)
+    huggingface_components = load_components(config, state_dicts, estimated_config, local_path)
+    yaml_config_prediction_type = get_yaml_config_prediction_type(sd)
+    update_prediction_type(huggingface_components, yaml_config_prediction_type, estimated_config)
+    return get_model(estimated_config, huggingface_components)
+
+
+def get_state_dicts_and_config(sd, additional_state_dicts):
     try:
-        state_dicts, estimated_config = split_state_dict(sd, additional_state_dicts=additional_state_dicts)
+        return split_state_dict(sd, additional_state_dicts=additional_state_dicts)
     except:
         raise ValueError('Failed to recognize model type!')
 
-    repo_name = estimated_config.huggingface_repo
 
-    local_path = os.path.join(dir_path, 'huggingface', repo_name)
-    config: dict = DiffusionPipeline.load_config(local_path)
+def load_components(config, state_dicts, estimated_config, local_path):
     huggingface_components = {}
     for component_name, v in config.items():
         if isinstance(v, list) and len(v) == 2:
@@ -329,10 +338,11 @@ def forge_loader(sd, additional_state_dicts=None):
                 del state_dicts[component_name]
             if component is not None:
                 huggingface_components[component_name] = component
+    return huggingface_components
 
+
+def get_yaml_config_prediction_type(sd):
     yaml_config = None
-    yaml_config_prediction_type = None
-
     with contextlib.suppress(ImportError):
         import yaml
         from pathlib import Path
@@ -340,35 +350,36 @@ def forge_loader(sd, additional_state_dicts=None):
         if Path(config_filename).is_file():
             with open(config_filename, 'r') as stream:
                 yaml_config = yaml.safe_load(stream)
-    has_prediction_type = 'scheduler' in huggingface_components and hasattr(huggingface_components['scheduler'], 'config') and 'prediction_type' in huggingface_components['scheduler'].config
-
     if yaml_config is not None:
-        yaml_config_prediction_type: str = (
-                yaml_config.get('model', {}).get('params', {}).get('parameterization', '')
-            or  yaml_config.get('model', {}).get('params', {}).get('denoiser_config', {}).get('params', {}).get('scaling_config', {}).get('target', '')
+        yaml_config_prediction_type = (
+            yaml_config.get('model', {}).get('params', {}).get('parameterization', '')
+            or yaml_config.get('model', {}).get('params', {}).get('denoiser_config', {}).get('params', {}).get('scaling_config', {}).get('target', '')
         )
         if yaml_config_prediction_type == 'v' or yaml_config_prediction_type.endswith(".VScaling"):
-            yaml_config_prediction_type = 'v_prediction'
-        else:
-            # Use estimated prediction config if no suitable prediction type found
-            yaml_config_prediction_type = ''
+            return 'v_prediction'
+    return ''
 
-    if has_prediction_type:
+
+def update_prediction_type(huggingface_components, yaml_config_prediction_type, estimated_config):
+    if (
+        has_prediction_type := 'scheduler' in huggingface_components
+        and hasattr(huggingface_components['scheduler'], 'config')
+        and 'prediction_type' in huggingface_components['scheduler'].config
+    ):
         if yaml_config_prediction_type:
             huggingface_components['scheduler'].config.prediction_type = yaml_config_prediction_type
         else:
-            # Fix Huggingface prediction type using .yaml config or estimated config detection
             prediction_types = {
                 'EPS': 'epsilon',
                 'V_PREDICTION': 'v_prediction',
                 'EDM': 'edm',
             }
-
             huggingface_components['scheduler'].config.prediction_type = prediction_types.get(estimated_config.model_type.name, huggingface_components['scheduler'].config.prediction_type)
 
+
+def get_model(estimated_config, huggingface_components):
     for M in possible_models:
         if any(isinstance(estimated_config, x) for x in M.matched_guesses):
             return M(estimated_config=estimated_config, huggingface_components=huggingface_components)
-
     print('Failed to recognize model type!')
     return None
