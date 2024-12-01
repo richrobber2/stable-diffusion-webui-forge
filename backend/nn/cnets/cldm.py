@@ -61,11 +61,11 @@ class ControlNet(nn.Module):
 
         if isinstance(num_res_blocks, int):
             self.num_res_blocks = len(channel_mult) * [num_res_blocks]
-        else:
-            if len(num_res_blocks) != len(channel_mult):
-                raise ValueError("provide num_res_blocks either as an int (globally constant) or as a list/tuple (per-level) with the same length as channel_mult")
+        elif len(num_res_blocks) == len(channel_mult):
             self.num_res_blocks = num_res_blocks
 
+        else:
+            raise ValueError("provide num_res_blocks either as an int (globally constant) or as a list/tuple (per-level) with the same length as channel_mult")
         if disable_self_attentions is not None:
             assert len(disable_self_attentions) == len(channel_mult)
         if num_attention_blocks is not None:
