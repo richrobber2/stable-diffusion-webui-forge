@@ -6,10 +6,7 @@ def stream_context():
     if torch.cuda.is_available():
         return torch.cuda.stream
 
-    if torch.xpu.is_available():
-        return torch.xpu.stream
-
-    return None
+    return torch.xpu.stream if torch.xpu.is_available() else None
 
 
 def get_current_stream():
