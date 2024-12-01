@@ -341,21 +341,13 @@ def repair_config(sd_config, state_dict=None):
 
 def rescale_zero_terminal_snr_abar(alphas_cumprod):
     alphas_bar_sqrt = alphas_cumprod.sqrt()
-
-    # Store old values.
-    alphas_bar_sqrt_0 = alphas_bar_sqrt[0].clone()
-    alphas_bar_sqrt_T = alphas_bar_sqrt[-1].clone()
-
-    # Shift so the last timestep is zero.
-    alphas_bar_sqrt -= (alphas_bar_sqrt_T)
-
-    # Scale so the first timestep is back to the old value.
-    alphas_bar_sqrt *= alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T)
-
-    # Convert alphas_bar_sqrt to betas
-    alphas_bar = alphas_bar_sqrt ** 2  # Revert sqrt
-    alphas_bar[-1] = 4.8973451890853435e-08
-    return alphas_bar
+    alphas_bar_sqrt_0 = alphas_bar_sqrt[0].item()
+    alphas_bar_sqrt_T = alphas_bar_sqrt[-1].item()
+    alphas_bar_sqrt.sub_(alphas_bar_sqrt_T)
+    alphas_bar_sqrt.mul_(alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T))
+    alphas_bar_sqrt.pow_(2)
+    alphas_bar_sqrt[-1] = 4.8973451890853435e-08
+    return alphas_bar_sqrt
 
 
 def apply_alpha_schedule_override(sd_model, p=None):
