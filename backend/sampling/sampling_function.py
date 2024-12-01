@@ -16,8 +16,6 @@ from backend import utils
 
 def get_area_and_mult(conds, x_in, timestep_in):
     area = (x_in.shape[2], x_in.shape[3], 0, 0)
-    strength = 1.0
-
     if 'timestep_start' in conds:
         timestep_start = conds['timestep_start']
         if timestep_in[0] > timestep_start:
@@ -28,20 +26,11 @@ def get_area_and_mult(conds, x_in, timestep_in):
             return None
     if 'area' in conds:
         area = conds['area']
-    if 'strength' in conds:
-        strength = conds['strength']
-
+    strength = conds['strength'] if 'strength' in conds else 1.0
     input_x = x_in[:, :, area[2]:area[0] + area[2], area[3]:area[1] + area[3]]
 
     if 'mask' in conds:
-        mask_strength = 1.0
-        if "mask_strength" in conds:
-            mask_strength = conds["mask_strength"]
-        mask = conds['mask']
-        assert (mask.shape[1] == x_in.shape[2])
-        assert (mask.shape[2] == x_in.shape[3])
-        mask = mask[:, area[2]:area[0] + area[2], area[3]:area[1] + area[3]] * mask_strength
-        mask = mask.unsqueeze(1).repeat(input_x.shape[0] // mask.shape[0], input_x.shape[1], 1, 1)
+        mask = _extracted_from_get_area_and_mult_(conds, x_in, area, input_x)
     else:
         mask = torch.ones_like(input_x)
     mult = mask * strength
@@ -61,11 +50,13 @@ def get_area_and_mult(conds, x_in, timestep_in):
             for t in range(rr):
                 mult[:, :, :, area[1] - 1 - t:area[1] - t] *= ((1.0 / rr) * (t + 1))
 
-    conditioning = {}
     model_conds = conds["model_conds"]
-    for c in model_conds:
-        conditioning[c] = model_conds[c].process_cond(batch_size=x_in.shape[0], device=x_in.device, area=area)
-
+    conditioning = {
+        c: model_conds[c].process_cond(
+            batch_size=x_in.shape[0], device=x_in.device, area=area
+        )
+        for c in model_conds
+    }
     control = conds.get('control', None)
 
     patches = None
@@ -73,15 +64,28 @@ def get_area_and_mult(conds, x_in, timestep_in):
     return cond_obj(input_x, mult, conditioning, area, control, patches)
 
 
+# TODO Rename this here and in `get_area_and_mult`
+def _extracted_from_get_area_and_mult_(conds, x_in, area, input_x):
+    mask_strength = conds["mask_strength"] if "mask_strength" in conds else 1.0
+    result = conds['mask']
+    assert result.shape[1] == x_in.shape[2]
+    assert result.shape[2] == x_in.shape[3]
+    result = (
+        result[:, area[2] : area[0] + area[2], area[3] : area[1] + area[3]]
+        * mask_strength
+    )
+    result = result.unsqueeze(1).repeat(
+        input_x.shape[0] // result.shape[0], input_x.shape[1], 1, 1
+    )
+    return result
+
+
 def cond_equal_size(c1, c2):
     if c1 is c2:
         return True
     if c1.keys() != c2.keys():
         return False
-    for k in c1:
-        if not c1[k].can_concat(c2[k]):
-            return False
-    return True
+    return all(c1[k].can_concat(c2[k]) for k in c1)
 
 
 def can_concat_cond(c1, c2):
@@ -91,10 +95,7 @@ def can_concat_cond(c1, c2):
     def objects_concatable(obj1, obj2):
         if (obj1 is None) != (obj2 is None):
             return False
-        if obj1 is not None:
-            if obj1 is not obj2:
-                return False
-        return True
+        return obj1 is None or obj1 is obj2
 
     if not objects_concatable(c1.control, c2.control):
         return False
@@ -118,12 +119,7 @@ def cond_cat(c_list):
             cur.append(x[k])
             temp[k] = cur
 
-    out = {}
-    for k in temp:
-        conds = temp[k]
-        out[k] = conds[0].concat(conds[1:])
-
-    return out
+    return {k: conds[0].concat(conds[1:]) for k, conds in temp.items()}
 
 
 def compute_cond_mark(cond_or_uncond, sigmas):
@@ -159,8 +155,6 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
     out_uncond_count = torch.ones_like(x_in) * 1e-37
 
     COND = 0
-    UNCOND = 1
-
     to_run = []
     for x in cond:
         p = get_area_and_mult(x, x_in, timestep)
@@ -169,6 +163,8 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
 
         to_run += [(p, COND)]
     if uncond is not None:
+        UNCOND = 1
+
         for x in uncond:
             p = get_area_and_mult(x, x_in, timestep)
             if p is None:
@@ -179,11 +175,11 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
     while len(to_run) > 0:
         first = to_run[0]
         first_shape = first[0][0].shape
-        to_batch_temp = []
-        for x in range(len(to_run)):
-            if can_concat_cond(to_run[x][0], first[0]):
-                to_batch_temp += [x]
-
+        to_batch_temp = [
+            x
+            for x in range(len(to_run))
+            if can_concat_cond(to_run[x][0], first[0])
+        ]
         to_batch_temp.reverse()
         to_batch = to_batch_temp[:1]
 
@@ -196,15 +192,7 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
             free_memory_mb = free_memory / (1024.0 * 1024.0)
             safe_memory_mb = 1536.0
             if free_memory_mb < safe_memory_mb:
-                print(f"\n\n----------------------")
-                print(f"[Low GPU VRAM Warning] Your current GPU free memory is {free_memory_mb:.2f} MB for this diffusion iteration.")
-                print(f"[Low GPU VRAM Warning] This number is lower than the safe value of {safe_memory_mb:.2f} MB.")
-                print(f"[Low GPU VRAM Warning] If you continue, you may cause NVIDIA GPU performance degradation for this diffusion process, and the speed may be extremely slow (about 10x slower).")
-                print(f"[Low GPU VRAM Warning] To solve the problem, you can set the 'GPU Weights' (on the top of page) to a lower value.")
-                print(f"[Low GPU VRAM Warning] If you cannot find 'GPU Weights', you can click the 'all' option in the 'UI' area on the left-top corner of the webpage.")
-                print(f"[Low GPU VRAM Warning] If you want to take the risk of NVIDIA GPU fallback and test the 10x slower speed, you can (but are highly not recommended to) add '--disable-gpu-warning' to CMD flags to remove this warning.")
-                print(f"----------------------\n\n")
-
+                _extracted_from_calc_cond_uncond_batch_46(free_memory_mb, safe_memory_mb)
         for i in range(1, len(to_batch_temp) + 1):
             batch_amount = to_batch_temp[:len(to_batch_temp) // i]
             input_shape = [len(batch_amount) * first_shape[0]] + list(first_shape)[1:]
@@ -243,10 +231,11 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
             if "patches" in transformer_options:
                 cur_patches = transformer_options["patches"].copy()
                 for p in patches:
-                    if p in cur_patches:
-                        cur_patches[p] = cur_patches[p] + patches[p]
-                    else:
-                        cur_patches[p] = patches[p]
+                    cur_patches[p] = (
+                        cur_patches[p] + patches[p]
+                        if p in cur_patches
+                        else patches[p]
+                    )
             else:
                 transformer_options["patches"] = patches
 
@@ -289,7 +278,21 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
     return out_cond, out_uncond
 
 
-def sampling_function_inner(model, x, timestep, uncond, cond, cond_scale, model_options={}, seed=None, return_full=False):
+# TODO Rename this here and in `calc_cond_uncond_batch`
+def _extracted_from_calc_cond_uncond_batch_46(free_memory_mb, safe_memory_mb):
+    print(f"\n\n----------------------")
+    print(f"[Low GPU VRAM Warning] Your current GPU free memory is {free_memory_mb:.2f} MB for this diffusion iteration.")
+    print(f"[Low GPU VRAM Warning] This number is lower than the safe value of {safe_memory_mb:.2f} MB.")
+    print("[Low GPU VRAM Warning] If you continue, you may cause NVIDIA GPU performance degradation for this diffusion process, and the speed may be extremely slow (about 10x slower).")
+    print("[Low GPU VRAM Warning] To solve the problem, you can set the 'GPU Weights' (on the top of page) to a lower value.")
+    print("[Low GPU VRAM Warning] If you cannot find 'GPU Weights', you can click the 'all' option in the 'UI' area on the left-top corner of the webpage.")
+    print("[Low GPU VRAM Warning] If you want to take the risk of NVIDIA GPU fallback and test the 10x slower speed, you can (but are highly not recommended to) add '--disable-gpu-warning' to CMD flags to remove this warning.")
+    print(f"----------------------\n\n")
+
+
+def sampling_function_inner(model, x, timestep, uncond, cond, cond_scale, model_options=None, seed=None, return_full=False):
+    if model_options is None:
+        model_options = {}
     edit_strength = sum((item['strength'] if 'strength' in item else 1) for item in cond)
 
     if math.isclose(cond_scale, 1.0) and model_options.get("disable_cfg1_optimization", False) == False:
@@ -316,10 +319,7 @@ def sampling_function_inner(model, x, timestep, uncond, cond, cond_scale, model_
                 "sigma": timestep, "model_options": model_options, "input": x}
         cfg_result = fn(args)
 
-    if return_full:
-        return cfg_result, cond_pred, uncond_pred
-
-    return cfg_result
+    return (cfg_result, cond_pred, uncond_pred) if return_full else cfg_result
 
 
 def sampling_function(self, denoiser_params, cond_scale, cond_composition):
@@ -339,15 +339,14 @@ def sampling_function(self, denoiser_params, cond_scale, cond_composition):
     else:
         image_cond_in = denoiser_params.image_cond
 
-    if isinstance(image_cond_in, torch.Tensor):
-        if image_cond_in.shape[0] == x.shape[0] \
-                and image_cond_in.shape[2] == x.shape[2] \
-                and image_cond_in.shape[3] == x.shape[3]:
-            if uncond is not None:
-                for i in range(len(uncond)):
-                    uncond[i]['model_conds']['c_concat'] = Condition(image_cond_in)
-            for i in range(len(cond)):
-                cond[i]['model_conds']['c_concat'] = Condition(image_cond_in)
+    if isinstance(image_cond_in, torch.Tensor) and (image_cond_in.shape[0] == x.shape[0] \
+                    and image_cond_in.shape[2] == x.shape[2] \
+                    and image_cond_in.shape[3] == x.shape[3]):
+        if uncond is not None:
+            for i in range(len(uncond)):
+                uncond[i]['model_conds']['c_concat'] = Condition(image_cond_in)
+        for i in range(len(cond)):
+            cond[i]['model_conds']['c_concat'] = Condition(image_cond_in)
 
     if control is not None:
         for h in cond:
