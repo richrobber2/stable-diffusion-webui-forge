@@ -46,14 +46,13 @@ def extract_style_text_from_prompt(style_text, prompt):
         if stripped_prompt.startswith(left) and stripped_prompt.endswith(right):
             prompt = stripped_prompt[len(left):len(stripped_prompt)-len(right)]
             return True, prompt
-    else:
-        if stripped_prompt.endswith(stripped_style_text):
-            prompt = stripped_prompt[:len(stripped_prompt)-len(stripped_style_text)]
+    elif stripped_prompt.endswith(stripped_style_text):
+        prompt = stripped_prompt[:len(stripped_prompt)-len(stripped_style_text)]
 
-            if prompt.endswith(', '):
-                prompt = prompt[:-2]
+        if prompt.endswith(', '):
+            prompt = prompt[:-2]
 
-            return True, prompt
+        return True, prompt
 
     return False, prompt
 
@@ -154,8 +153,7 @@ class StyleDatabase:
                 self.styles[style.name] = style._replace(path=str(self.default_path))
 
         # Create a list of all distinct paths, including the default path
-        style_paths = set()
-        style_paths.add(str(self.default_path))
+        style_paths = {str(self.default_path)}
         for _, style in self.styles.items():
             if style.path:
                 style_paths.add(style.path)
