@@ -85,9 +85,7 @@ plaintext_to_html = ui_common.plaintext_to_html
 
 
 def send_gradio_gallery_to_image(x):
-    if len(x) == 0:
-        return None
-    return image_from_url_text(x[0])
+    return None if len(x) == 0 else image_from_url_text(x[0])
 
 
 def calc_resolution_hires(enable, width, height, hr_scale, hr_resize_x, hr_resize_y):
@@ -121,9 +119,7 @@ def resize_from_to_html(width, height, scale_by):
 
 def process_interrogate(interrogation_function, mode, ii_input_dir, ii_output_dir, *ii_singles):
     mode = int(mode)
-    if mode in (0, 1, 3, 4):
-        return [interrogation_function(ii_singles[mode]), None]
-    elif mode == 2:
+    if mode in {0, 1, 3, 4, 2}:
         return [interrogation_function(ii_singles[mode]), None]
     elif mode == 5:
         assert not shared.cmd_opts.hide_ui_dir_config, "Launched with --hide-ui-dir-config, batch img2img disabled"
@@ -196,11 +192,14 @@ def update_token_counter(text, steps, styles, *, is_positive=True):
         get_prompt_lengths_on_ui = sd_models.model_data.sd_model.get_prompt_lengths_on_ui
         assert get_prompt_lengths_on_ui is not None
     except Exception:
-        return f"<span class='gr-box gr-text-input'>?/?</span>"
+        return "<span class='gr-box gr-text-input'>?/?</span>"
 
     flat_prompts = reduce(lambda list1, list2: list1+list2, prompt_schedules)
     prompts = [prompt_text for step, prompt_text in flat_prompts]
-    token_count, max_length = max([get_prompt_lengths_on_ui(prompt) for prompt in prompts], key=lambda args: args[0])
+    token_count, max_length = max(
+        (get_prompt_lengths_on_ui(prompt) for prompt in prompts),
+        key=lambda args: args[0],
+    )
     return f"<span class='gr-box gr-text-input'>{token_count}/{max_length}</span>"
 
 
