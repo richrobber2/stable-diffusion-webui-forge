@@ -1,3 +1,4 @@
+import contextlib
 import os
 
 import torch
@@ -18,11 +19,8 @@ def initialize():
     shared.options_templates = shared_options.options_templates
     shared.opts = options.Options(shared_options.options_templates, shared_options.restricted_opts)
     shared.restricted_opts = shared_options.restricted_opts
-    try:
+    with contextlib.suppress(FileNotFoundError):
         shared.opts.load(shared.config_filename)
-    except FileNotFoundError:
-        pass
-
     from modules import devices
     shared.device = devices.device
     shared.weight_load_location = None if cmd_opts.lowram else "cpu"
