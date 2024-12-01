@@ -33,10 +33,10 @@ class T5TextProcessingEngine:
         self.token_mults = {}
 
         tokens_with_parens = [(k, v) for k, v in vocab.items() if '(' in k or ')' in k or '[' in k or ']' in k]
+        multiplier_factor = 1.1
+
         for text, ident in tokens_with_parens:
             mult = 1.0
-            multiplier_factor = 1.1
-
             # Use a more efficient calculation for nested brackets
             open_brackets = text.count('[') - text.count(']')
             open_parens = text.count('(') - text.count(')')
@@ -48,8 +48,9 @@ class T5TextProcessingEngine:
                 self.token_mults[ident] = mult
 
     def tokenize(self, texts):
-        tokenized = self.tokenizer(texts, truncation=False, add_special_tokens=False)["input_ids"]
-        return tokenized
+        return self.tokenizer(texts, truncation=False, add_special_tokens=False)[
+            "input_ids"
+        ]
 
     def encode_with_transformers(self, tokens):
         device = memory_management.text_encoder_device()
@@ -57,18 +58,16 @@ class T5TextProcessingEngine:
 
         # Optimize batch processing
         batch_size = tokens.shape[0]
-        if batch_size > 1:
-            # Process in smaller batches if input is large
-            max_batch = 8
-            z_list = []
-            for i in range(0, batch_size, max_batch):
-                batch = tokens[i:i + max_batch]
-                z_list.append(self.text_encoder(input_ids=batch))
-            z = torch.cat(z_list, dim=0)
-        else:
-            z = self.text_encoder(input_ids=tokens)
+        if batch_size <= 1:
+            return self.text_encoder(input_ids=tokens)
 
-        return z
+        # Process in smaller batches if input is large
+        max_batch = 8
+        z_list = []
+        for i in range(0, batch_size, max_batch):
+            batch = tokens[i:i + max_batch]
+            z_list.append(self.text_encoder(input_ids=batch))
+        return torch.cat(z_list, dim=0)
 
     def tokenize_line(self, line):
         parsed = parsing.parse_prompt_attention(line)
