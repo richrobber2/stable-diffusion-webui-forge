@@ -183,7 +183,7 @@ def sort_callbacks(category, unordered_callbacks, *, enable_user_sort=True):
         callbacks = [callback_lookup[x] for x in sorted_names]
 
     if enable_user_sort:
-        for name in reversed(getattr(shared.opts, 'prioritized_callbacks_' + category, [])):
+        for name in reversed(getattr(shared.opts, f'prioritized_callbacks_{category}', [])):
             index = next((i for i, callback in enumerate(callbacks) if callback.name == name), None)
             if index is not None:
                 callbacks.insert(0, callbacks.pop(index))
@@ -193,7 +193,7 @@ def sort_callbacks(category, unordered_callbacks, *, enable_user_sort=True):
 
 def ordered_callbacks(category, unordered_callbacks=None, *, enable_user_sort=True):
     if unordered_callbacks is None:
-        unordered_callbacks = callback_map.get('callbacks_' + category, [])
+        unordered_callbacks = callback_map.get(f'callbacks_{category}', [])
 
     if not enable_user_sort:
         return sort_callbacks(category, unordered_callbacks, enable_user_sort=False)
