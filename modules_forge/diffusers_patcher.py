@@ -19,11 +19,10 @@ class DiffusersModelPatcher:
             with modeling_utils.no_init_weights():
                 self.pipeline = pipeline_class.from_pretrained(*args, **kwargs)
 
-        if hasattr(self.pipeline, 'unet'):
-            if hasattr(self.pipeline.unet, 'set_attn_processor'):
-                from diffusers.models.attention_processor import AttnProcessor2_0
-                self.pipeline.unet.set_attn_processor(AttnProcessor2_0())
-                print('Attention optimization applied to DiffusersModelPatcher')
+        if hasattr(self.pipeline, 'unet') and hasattr(self.pipeline.unet, 'set_attn_processor'):
+            from diffusers.models.attention_processor import AttnProcessor2_0
+            self.pipeline.unet.set_attn_processor(AttnProcessor2_0())
+            print('Attention optimization applied to DiffusersModelPatcher')
 
         self.pipeline = self.pipeline.to(device=offload_device)
 
