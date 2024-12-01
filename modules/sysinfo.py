@@ -49,9 +49,7 @@ def get():
     text = json.dumps(res, ensure_ascii=False, indent=4)
 
     h = hashlib.sha256(text.encode("utf8"))
-    text = text.replace(checksum_token, h.hexdigest())
-
-    return text
+    return text.replace(checksum_token, h.hexdigest())
 
 
 re_checksum = re.compile(r'"Checksum": "([0-9a-fA-F]{64})"')
@@ -65,7 +63,7 @@ def check(x):
     replaced = re.sub(re_checksum, f'"Checksum": "{checksum_token}"', x)
 
     h = hashlib.sha256(replaced.encode("utf8"))
-    return h.hexdigest() == m.group(1)
+    return h.hexdigest() == m[1]
 
 
 def get_cpu_info():
@@ -102,7 +100,7 @@ def get_packages():
 
 def get_dict():
     config = get_config()
-    res = {
+    return {
         "Platform": platform.platform(),
         "Python": platform.python_version(),
         "Version": launch_utils.git_tag(),
@@ -117,15 +115,19 @@ def get_dict():
         "Exceptions": errors.get_exceptions(),
         "CPU": get_cpu_info(),
         "RAM": get_ram_info(),
-        "Extensions": get_extensions(enabled=True, fallback_disabled_extensions=config.get('disabled_extensions', [])),
-        "Inactive extensions": get_extensions(enabled=False, fallback_disabled_extensions=config.get('disabled_extensions', [])),
+        "Extensions": get_extensions(
+            enabled=True,
+            fallback_disabled_extensions=config.get('disabled_extensions', []),
+        ),
+        "Inactive extensions": get_extensions(
+            enabled=False,
+            fallback_disabled_extensions=config.get('disabled_extensions', []),
+        ),
         "Environment": get_environment(),
         "Config": config,
         "Startup": timer.startup_record,
         "Packages": get_packages(),
     }
-
-    return res
 
 
 def get_environment():
