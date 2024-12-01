@@ -20,8 +20,11 @@ class UpscalerRealESRGAN(Upscaler):
         for scaler in scalers:
             if scaler.local_data_path.startswith("http"):
                 filename = modelloader.friendly_name(scaler.local_data_path)
-                local_model_candidates = [local_model for local_model in local_model_paths if local_model.endswith(f"{filename}.pth")]
-                if local_model_candidates:
+                if local_model_candidates := [
+                    local_model
+                    for local_model in local_model_paths
+                    if local_model.endswith(f"{filename}.pth")
+                ]:
                     scaler.local_data_path = local_model_candidates[0]
 
             if scaler.name in opts.realesrgan_enabled_models:
