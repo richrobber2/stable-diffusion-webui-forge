@@ -1,4 +1,5 @@
 import copy
+import itertools
 import torch
 
 from backend.modules.k_model import KModel
@@ -172,9 +173,8 @@ class UnetPatcher(ModelPatcher):
 
     def set_model_replace_all(self, patch, target="attn1"):
         for block_name in ['input', 'middle', 'output']:
-            for number in range(16):
-                for transformer_index in range(16):
-                    self.set_model_patch_replace(patch, target, block_name, number, transformer_index)
+            for number, transformer_index in itertools.product(range(16), range(16)):
+                self.set_model_patch_replace(patch, target, block_name, number, transformer_index)
         return
 
     def load_frozen_patcher(self, filename, state_dict, strength):
