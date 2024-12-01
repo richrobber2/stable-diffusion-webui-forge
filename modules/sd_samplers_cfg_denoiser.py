@@ -83,9 +83,11 @@ class CFGDenoiser(torch.nn.Module):
 
     def combine_denoised_for_edit_model(self, x_out, cond_scale):
         out_cond, out_img_cond, out_uncond = x_out.chunk(3)
-        denoised = out_uncond + cond_scale * (out_cond - out_img_cond) + self.image_cfg_scale * (out_img_cond - out_uncond)
-
-        return denoised
+        return (
+            out_uncond
+            + cond_scale * (out_cond - out_img_cond)
+            + self.image_cfg_scale * (out_img_cond - out_uncond)
+        )
 
     def get_pred_x0(self, x_in, x_out, sigma):
         return x_out
@@ -186,7 +188,7 @@ class CFGDenoiser(torch.nn.Module):
         # NGMS
         if self.p.is_hr_pass == True:
             cond_scale = self.p.hr_cfg
-        
+
         if shared.opts.skip_early_cond > 0 and self.step / self.total_steps <= shared.opts.skip_early_cond:
             cond_scale = 1.0
             self.p.extra_generation_params["Skip Early CFG"] = shared.opts.skip_early_cond
@@ -222,7 +224,5 @@ class CFGDenoiser(torch.nn.Module):
         self.step += 1
 
         if self.classic_ddim_eps_estimation:
-            eps = (x - denoised) / sigma[:, None, None, None]
-            return eps
-
+            return (x - denoised) / sigma[:, None, None, None]
         return denoised.to(device=original_x_device, dtype=original_x_dtype)
