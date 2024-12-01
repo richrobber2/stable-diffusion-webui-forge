@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 
@@ -60,11 +61,9 @@ def ldm_print(*args, **kwargs):
 
 def truncate_path(target_path, base_path=cwd):
     abs_target, abs_base = os.path.abspath(target_path), os.path.abspath(base_path)
-    try:
+    with contextlib.suppress(ValueError):
         if os.path.commonpath([abs_target, abs_base]) == abs_base:
             return os.path.relpath(abs_target, abs_base)
-    except ValueError:
-        pass
     return abs_target
 
 
