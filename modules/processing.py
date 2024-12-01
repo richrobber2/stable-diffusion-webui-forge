@@ -45,9 +45,7 @@ opt_f = 8
 
 def setup_color_correction(image):
     logging.info("Calibrating color correction.")
-    correction_target = cv2.cvtColor(np.asarray(image.copy()), cv2.COLOR_RGB2LAB)
-    return correction_target
-
+    return cv2.cvtColor(np.asarray(image.copy()), cv2.COLOR_RGB2LAB)
 
 def apply_color_correction(correction, original_image):
     logging.info("Applying color correction.")
@@ -306,9 +304,7 @@ class StableDiffusionProcessing:
         raise NotImplementedError('NotImplementedError: depth2img_image_conditioning')
 
     def edit_image_conditioning(self, source_image):
-        conditioning_image = shared.sd_model.encode_first_stage(source_image).mode()
-
-        return conditioning_image
+        return shared.sd_model.encode_first_stage(source_image).mode()
 
     def unclip_image_conditioning(self, source_image):
         c_adm = self.sd_model.embedder(source_image)
@@ -322,20 +318,19 @@ class StableDiffusionProcessing:
         self.is_using_inpainting_conditioning = True
 
         # Handle the different mask inputs
-        if image_mask is not None:
-            if torch.is_tensor(image_mask):
-                conditioning_mask = image_mask
-            else:
-                conditioning_mask = np.array(image_mask.convert("L"))
-                conditioning_mask = conditioning_mask.astype(np.float32) / 255.0
-                conditioning_mask = torch.from_numpy(conditioning_mask[None, None])
-
-                if round_image_mask:
-                    # Caller is requesting a discretized mask as input, so we round to either 1.0 or 0.0
-                    conditioning_mask = torch.round(conditioning_mask)
-
-        else:
+        if image_mask is None:
             conditioning_mask = source_image.new_ones(1, 1, *source_image.shape[-2:])
+
+        elif torch.is_tensor(image_mask):
+            conditioning_mask = image_mask
+        else:
+            conditioning_mask = np.array(image_mask.convert("L"))
+            conditioning_mask = conditioning_mask.astype(np.float32) / 255.0
+            conditioning_mask = torch.from_numpy(conditioning_mask[None, None])
+
+            if round_image_mask:
+                # Caller is requesting a discretized mask as input, so we round to either 1.0 or 0.0
+                conditioning_mask = torch.round(conditioning_mask)
 
         # Create another latent image, this time with a masked version of the original input.
         # Smoothly interpolate between the masked and unmasked latent conditioning image using a parameter.
@@ -352,10 +347,7 @@ class StableDiffusionProcessing:
         # Create the concatenated conditioning tensor to be fed to `c_concat`
         conditioning_mask = torch.nn.functional.interpolate(conditioning_mask, size=latent_image.shape[-2:])
         conditioning_mask = conditioning_mask.expand(conditioning_image.shape[0], -1, -1, -1)
-        image_conditioning = torch.cat([conditioning_mask, conditioning_image], dim=1)
-        # image_conditioning = image_conditioning.to(shared.device).type(self.sd_model.dtype)
-
-        return image_conditioning
+        return torch.cat([conditioning_mask, conditioning_image], dim=1)
 
     def img2img_image_conditioning(self, source_image, latent_image, image_mask=None, round_image_mask=True):
         source_image = devices.cond_cast_float(source_image)
@@ -558,16 +550,16 @@ class Processed:
         self.s_noise = p.s_noise
         self.s_min_uncond = p.s_min_uncond
         self.sampler_noise_scheduler_override = p.sampler_noise_scheduler_override
-        self.prompt = self.prompt if not isinstance(self.prompt, list) else self.prompt[0]
-        self.negative_prompt = self.negative_prompt if not isinstance(self.negative_prompt, list) else self.negative_prompt[0]
-        self.seed = int(self.seed if not isinstance(self.seed, list) else self.seed[0]) if self.seed is not None else -1
-        self.subseed = int(self.subseed if not isinstance(self.subseed, list) else self.subseed[0]) if self.subseed is not None else -1
+        self.prompt = self.prompt[0] if isinstance(self.prompt, list) else self.prompt
+        self.negative_prompt = self.negative_prompt[0] if isinstance(self.negative_prompt, list) else self.negative_prompt
+        self.seed = int(self.seed[0] if isinstance(self.seed, list) else self.seed) if self.seed is not None else -1
+        self.subseed = int(self.subseed[0] if isinstance(self.subseed, list) else self.subseed) if self.subseed is not None else -1
         self.is_using_inpainting_conditioning = p.is_using_inpainting_conditioning
 
         self.all_prompts = all_prompts or p.all_prompts or [self.prompt]
         self.all_negative_prompts = all_negative_prompts or p.all_negative_prompts or [self.negative_prompt]
-        self.all_seeds = all_seeds or p.all_seeds or [self.seed]
-        self.all_subseeds = all_subseeds or p.all_subseeds or [self.subseed]
+        self.all_seeds = all_seeds or (p.all_seeds if hasattr(p, 'all_seeds') else [self.seed])
+        self.all_subseeds = all_subseeds or (p.all_subseeds if hasattr(p, 'all_subseeds') else [self.subseed])
         self.infotexts = infotexts or [info] * len(images_list)
         self.version = program_version()
 
@@ -644,10 +636,7 @@ def get_fixed_seed(seed):
         except Exception:
             seed = -1
 
-    if seed == -1:
-        return int(random.randrange(4294967294))
-
-    return seed
+    return random.randrange(4294967294) if seed == -1 else seed
 
 
 def fix_seed(p):
@@ -816,7 +805,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
     """applies settings overrides (if any) before processing images, then restores settings as applicable."""
     if p.scripts is not None:
         p.scripts.before_process(p)
-        
+
     stored_opts = {k: opts.data[k] if k in opts.data else opts.get_default(k) for k in p.override_settings.keys() if k in opts.data}
 
     try:
@@ -829,10 +818,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
         set_config(p.override_settings, is_api=True, run_callbacks=False, save_config=False)
 
         # load/reload model and manage prompt cache as needed
-        if getattr(p, 'txt2img_upscale', False):
-            # avoid model load from hiresfix quickbutton, as it could be redundant
-            pass
-        else:
+        if not getattr(p, 'txt2img_upscale', False):
             manage_model_and_prompt_cache(p)
 
         # backwards compatibility, fix sampler and scheduler if invalid
@@ -871,7 +857,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     if p.refiner_checkpoint not in (None, "", "None", "none"):
         p.refiner_checkpoint_info = sd_models.get_closet_checkpoint_match(p.refiner_checkpoint)
         if p.refiner_checkpoint_info is None:
-            raise Exception(f'Could not find checkpoint with name {p.refiner_checkpoint}')
+            raise FileNotFoundError(f'Could not find checkpoint with name {p.refiner_checkpoint}')
 
     if hasattr(shared.sd_model, 'fix_dimensions'):
         p.width, p.height = shared.sd_model.fix_dimensions(p.width, p.height)
@@ -1257,87 +1243,95 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 self.hr_upscale_to_x = self.hr_resize_y * self.width // self.height
                 self.hr_upscale_to_y = self.hr_resize_y
             else:
-                target_w = self.hr_resize_x
-                target_h = self.hr_resize_y
-                src_ratio = self.width / self.height
-                dst_ratio = self.hr_resize_x / self.hr_resize_y
+                self._extracted_from_calculate_target_resolution_25()
 
-                if src_ratio < dst_ratio:
-                    self.hr_upscale_to_x = self.hr_resize_x
-                    self.hr_upscale_to_y = self.hr_resize_x * self.height // self.width
-                else:
-                    self.hr_upscale_to_x = self.hr_resize_y * self.width // self.height
-                    self.hr_upscale_to_y = self.hr_resize_y
+    # TODO Rename this here and in `calculate_target_resolution`
+    def _extracted_from_calculate_target_resolution_25(self):
+        target_w = self.hr_resize_x
+        target_h = self.hr_resize_y
+        src_ratio = self.width / self.height
+        dst_ratio = self.hr_resize_x / self.hr_resize_y
 
-                self.truncate_x = (self.hr_upscale_to_x - target_w) // opt_f
-                self.truncate_y = (self.hr_upscale_to_y - target_h) // opt_f
+        if src_ratio < dst_ratio:
+            self.hr_upscale_to_x = self.hr_resize_x
+            self.hr_upscale_to_y = self.hr_resize_x * self.height // self.width
+        else:
+            self.hr_upscale_to_x = self.hr_resize_y * self.width // self.height
+            self.hr_upscale_to_y = self.hr_resize_y
+
+        self.truncate_x = (self.hr_upscale_to_x - target_w) // opt_f
+        self.truncate_y = (self.hr_upscale_to_y - target_h) // opt_f
 
     def init(self, all_prompts, all_seeds, all_subseeds):
-        if self.enable_hr:
-            self.extra_generation_params["Denoising strength"] = self.denoising_strength
+        if not self.enable_hr:
+            return
+        self.extra_generation_params["Denoising strength"] = self.denoising_strength
 
-            if self.hr_checkpoint_name and self.hr_checkpoint_name != 'Use same checkpoint':
-                self.hr_checkpoint_info = sd_models.get_closet_checkpoint_match(self.hr_checkpoint_name)
+        if self.hr_checkpoint_name and self.hr_checkpoint_name != 'Use same checkpoint':
+            self.hr_checkpoint_info = sd_models.get_closet_checkpoint_match(self.hr_checkpoint_name)
 
-                if self.hr_checkpoint_info is None:
-                    raise Exception(f'Could not find checkpoint with name {self.hr_checkpoint_name}')
+            if self.hr_checkpoint_info is None:
+                raise FileNotFoundError(f'Could not find checkpoint with name {self.hr_checkpoint_name}')
 
-                self.extra_generation_params["Hires checkpoint"] = self.hr_checkpoint_info.short_title
+            self.extra_generation_params["Hires checkpoint"] = self.hr_checkpoint_info.short_title
 
-            if isinstance(self.hr_additional_modules, list):
-                if self.hr_additional_modules == []:
-                    self.extra_generation_params['Hires Module 1'] = 'Built-in'
-                elif 'Use same choices' in self.hr_additional_modules:
-                    self.extra_generation_params['Hires Module 1'] = 'Use same choices'
-                else:
-                    for i, m in enumerate(self.hr_additional_modules):
-                        self.extra_generation_params[f'Hires Module {i+1}'] = os.path.splitext(os.path.basename(m))[0]
+        if isinstance(self.hr_additional_modules, list):
+            if self.hr_additional_modules == []:
+                self.extra_generation_params['Hires Module 1'] = 'Built-in'
+            elif 'Use same choices' in self.hr_additional_modules:
+                self.extra_generation_params['Hires Module 1'] = 'Use same choices'
+            else:
+                for i, m in enumerate(self.hr_additional_modules):
+                    self.extra_generation_params[f'Hires Module {i+1}'] = os.path.splitext(os.path.basename(m))[0]
 
-            if self.hr_sampler_name is not None and self.hr_sampler_name != self.sampler_name:
-                self.extra_generation_params["Hires sampler"] = self.hr_sampler_name
+        if self.hr_sampler_name is not None and self.hr_sampler_name != self.sampler_name:
+            self.extra_generation_params["Hires sampler"] = self.hr_sampler_name
 
-            def get_hr_prompt(p, index, prompt_text, **kwargs):
-                hr_prompt = p.all_hr_prompts[index]
-                return hr_prompt if hr_prompt != prompt_text else None
+        def get_hr_prompt(p, index, prompt_text, **kwargs):
+            hr_prompt = p.all_hr_prompts[index]
+            return hr_prompt if hr_prompt != prompt_text else None
 
-            def get_hr_negative_prompt(p, index, negative_prompt, **kwargs):
-                hr_negative_prompt = p.all_hr_negative_prompts[index]
-                return hr_negative_prompt if hr_negative_prompt != negative_prompt else None
+        def get_hr_negative_prompt(p, index, negative_prompt, **kwargs):
+            hr_negative_prompt = p.all_hr_negative_prompts[index]
+            return hr_negative_prompt if hr_negative_prompt != negative_prompt else None
 
-            self.extra_generation_params["Hires prompt"] = get_hr_prompt
-            self.extra_generation_params["Hires negative prompt"] = get_hr_negative_prompt
+        self.extra_generation_params["Hires prompt"] = get_hr_prompt
+        self.extra_generation_params["Hires negative prompt"] = get_hr_negative_prompt
 
-            self.extra_generation_params["Hires CFG Scale"] = self.hr_cfg
-            self.extra_generation_params["Hires Distilled CFG Scale"] = None  # set after potential hires model load
+        self.extra_generation_params["Hires CFG Scale"] = self.hr_cfg
+        self.extra_generation_params["Hires Distilled CFG Scale"] = None  # set after potential hires model load
 
-            self.extra_generation_params["Hires schedule type"] = None  # to be set in sd_samplers_kdiffusion.py
+        self.extra_generation_params["Hires schedule type"] = None  # to be set in sd_samplers_kdiffusion.py
 
-            if self.hr_scheduler is None:
-                self.hr_scheduler = self.scheduler
+        if self.hr_scheduler is None:
+            self.hr_scheduler = self.scheduler
 
-            self.latent_scale_mode = shared.latent_upscale_modes.get(self.hr_upscaler, None) if self.hr_upscaler is not None else shared.latent_upscale_modes.get(shared.latent_upscale_default_mode, "nearest")
-            if self.enable_hr and self.latent_scale_mode is None:
-                if not any(x.name == self.hr_upscaler for x in shared.sd_upscalers):
-                    raise Exception(f"could not find upscaler named {self.hr_upscaler}")
+        self.latent_scale_mode = shared.latent_upscale_modes.get(self.hr_upscaler, None) if self.hr_upscaler is not None else shared.latent_upscale_modes.get(shared.latent_upscale_default_mode, "nearest")
+        if (
+            self.enable_hr
+            and self.latent_scale_mode is None
+            and all(x.name != self.hr_upscaler for x in shared.sd_upscalers)
+        ):
+            raise ValueError(f"could not find upscaler named {self.hr_upscaler}")
 
-            self.calculate_target_resolution()
+        self.calculate_target_resolution()
 
-            if not state.processing_has_refined_job_count:
-                if state.job_count == -1:
-                    state.job_count = self.n_iter
-                if getattr(self, 'txt2img_upscale', False):
-                    total_steps = (self.hr_second_pass_steps or self.steps) * state.job_count
-                else:
-                    total_steps = (self.steps + (self.hr_second_pass_steps or self.steps)) * state.job_count
-                shared.total_tqdm.updateTotal(total_steps)
-                state.job_count = state.job_count * 2
-                state.processing_has_refined_job_count = True
+        if not state.processing_has_refined_job_count:
+            if state.job_count == -1:
+                state.job_count = self.n_iter
+            if getattr(self, 'txt2img_upscale', False):
+                total_steps = (self.hr_second_pass_steps or self.steps) * state.job_count
+            else:
+                total_steps = (self.steps + (self.hr_second_pass_steps or self.steps)) * state.job_count
+            shared.total_tqdm.updateTotal(total_steps)
+            state.job_count = state.job_count * 2
+            state.processing_has_refined_job_count = True
 
-            if self.hr_second_pass_steps:
-                self.extra_generation_params["Hires steps"] = self.hr_second_pass_steps
+        if self.hr_second_pass_steps:
+            self.extra_generation_params["Hires steps"] = self.hr_second_pass_steps
 
-            if self.hr_upscaler is not None:
-                self.extra_generation_params["Hires upscaler"] = self.hr_upscaler
+        if self.hr_upscaler is not None:
+            self.extra_generation_params["Hires upscaler"] = self.hr_upscaler
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
@@ -1398,34 +1392,37 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 decoded_samples = None
 
         with sd_models.SkipWritingToConfig():
-            fp_checkpoint = getattr(shared.opts, 'sd_model_checkpoint')
-            fp_additional_modules = getattr(shared.opts, 'forge_additional_modules')
-
-            reload = False
-            if 'Use same choices' not in self.hr_additional_modules:
-                modules_changed = main_entry.modules_change(self.hr_additional_modules, save=False, refresh=False)
-                if modules_changed:
-                    reload = True
-
-            if self.hr_checkpoint_name and self.hr_checkpoint_name != 'Use same checkpoint':
-                checkpoint_changed = main_entry.checkpoint_change(self.hr_checkpoint_name, save=False, refresh=False)
-                if checkpoint_changed:
-                    self.firstpass_use_distilled_cfg_scale = self.sd_model.use_distilled_cfg_scale
-                    reload = True
-
-            if reload:
-                try:
-                    main_entry.refresh_model_loading_parameters()
-                    sd_models.forge_model_reload()
-                finally:
-                    main_entry.modules_change(fp_additional_modules, save=False, refresh=False)
-                    main_entry.checkpoint_change(fp_checkpoint, save=False, refresh=False)
-                    main_entry.refresh_model_loading_parameters()
-
-            if self.sd_model.use_distilled_cfg_scale:
-                self.extra_generation_params['Hires Distilled CFG Scale'] = self.hr_distilled_cfg
-
+            self._extracted_from_sample_60()
         return self.sample_hr_pass(samples, decoded_samples, seeds, subseeds, subseed_strength, prompts)
+
+    # TODO Rename this here and in `sample`
+    def _extracted_from_sample_60(self):
+        fp_checkpoint = getattr(shared.opts, 'sd_model_checkpoint')
+        fp_additional_modules = getattr(shared.opts, 'forge_additional_modules')
+
+        reload = False
+        if 'Use same choices' not in self.hr_additional_modules:
+            modules_changed = main_entry.modules_change(self.hr_additional_modules, save=False, refresh=False)
+            if modules_changed:
+                reload = True
+
+        if self.hr_checkpoint_name and self.hr_checkpoint_name != 'Use same checkpoint':
+            checkpoint_changed = main_entry.checkpoint_change(self.hr_checkpoint_name, save=False, refresh=False)
+            if checkpoint_changed:
+                self.firstpass_use_distilled_cfg_scale = self.sd_model.use_distilled_cfg_scale
+                reload = True
+
+        if reload:
+            try:
+                main_entry.refresh_model_loading_parameters()
+                sd_models.forge_model_reload()
+            finally:
+                main_entry.modules_change(fp_additional_modules, save=False, refresh=False)
+                main_entry.checkpoint_change(fp_checkpoint, save=False, refresh=False)
+                main_entry.refresh_model_loading_parameters()
+
+        if self.sd_model.use_distilled_cfg_scale:
+            self.extra_generation_params['Hires Distilled CFG Scale'] = self.hr_distilled_cfg
 
     def sample_hr_pass(self, samples, decoded_samples, seeds, subseeds, subseed_strength, prompts):
         if shared.state.interrupted:
@@ -1616,10 +1613,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                     extra_networks.activate(self, self.extra_network_data)
 
     def get_conds(self):
-        if self.is_hr_pass:
-            return self.hr_c, self.hr_uc
-
-        return super().get_conds()
+        return (self.hr_c, self.hr_uc) if self.is_hr_pass else super().get_conds()
 
     def parse_extra_network_prompts(self):
         res = super().parse_extra_network_prompts()
@@ -1671,9 +1665,7 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
 
     @property
     def mask_blur(self):
-        if self.mask_blur_x == self.mask_blur_y:
-            return self.mask_blur_x
-        return None
+        return self.mask_blur_x if self.mask_blur_x == self.mask_blur_y else None
 
     @mask_blur.setter
     def mask_blur(self, value):
@@ -1777,12 +1769,11 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
                 image = image.crop(crop_region)
                 image = images.resize_image(2, image, self.width, self.height)
 
-            if image_mask is not None:
-                if self.inpainting_fill != 1:
-                    image = masking.fill(image, latent_mask)
-
-                    if self.inpainting_fill == 0:
-                        self.extra_generation_params["Masked content"] = 'fill'
+            if image_mask is not None and self.inpainting_fill != 1:
+                image = masking.fill(image, latent_mask)
+            
+                if self.inpainting_fill == 0:
+                    self.extra_generation_params["Masked content"] = 'fill'
 
             if add_color_corrections:
                 self.color_corrections.append(setup_color_correction(image))
@@ -1819,27 +1810,37 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
             self.init_latent = torch.nn.functional.interpolate(self.init_latent, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
 
         if image_mask is not None:
-            init_mask = latent_mask
-            latmask = init_mask.convert('RGB').resize((self.init_latent.shape[3], self.init_latent.shape[2]))
-            latmask = np.moveaxis(np.array(latmask, dtype=np.float32), 2, 0) / 255
-            latmask = latmask[0]
-            if self.mask_round:
-                latmask = np.around(latmask)
-            latmask = np.tile(latmask[None], (self.init_latent.shape[1], 1, 1))
+            self._extracted_from_init_139(latent_mask, all_seeds)
+        self.image_conditioning = self.img2img_image_conditioning(image * 2 - 1, self.init_latent, image_mask, self.mask_round)
 
-            self.mask = torch.asarray(1.0 - latmask).to(shared.device).type(devices.dtype)
-            self.nmask = torch.asarray(latmask).to(shared.device).type(devices.dtype)
+    # TODO Rename this here and in `init`
+    def _extracted_from_init_139(self, latent_mask, all_seeds):
+        init_mask = latent_mask
+        latmask = init_mask.convert('RGB').resize((self.init_latent.shape[3], self.init_latent.shape[2]))
+        latmask = np.moveaxis(np.array(latmask, dtype=np.float32), 2, 0) / 255
+        latmask = latmask[0]
+        if self.mask_round:
+            latmask = np.around(latmask)
+        latmask = np.tile(latmask[None], (self.init_latent.shape[1], 1, 1))
+
+        self.mask = torch.asarray(1.0 - latmask).to(shared.device).type(devices.dtype)
+        self.nmask = torch.asarray(latmask).to(shared.device).type(devices.dtype)
 
             # this needs to be fixed to be done in sample() using actual seeds for batches
-            if self.inpainting_fill == 2:
-                self.init_latent = self.init_latent * self.mask + create_random_tensors(self.init_latent.shape[1:], all_seeds[0:self.init_latent.shape[0]]) * self.nmask
-                self.extra_generation_params["Masked content"] = 'latent noise'
+        if self.inpainting_fill == 2:
+            self.init_latent = (
+                self.init_latent * self.mask
+                + create_random_tensors(
+                    self.init_latent.shape[1:],
+                    all_seeds[: self.init_latent.shape[0]],
+                )
+                * self.nmask
+            )
+            self.extra_generation_params["Masked content"] = 'latent noise'
 
-            elif self.inpainting_fill == 3:
-                self.init_latent = self.init_latent * self.mask
-                self.extra_generation_params["Masked content"] = 'latent nothing'
-
-        self.image_conditioning = self.img2img_image_conditioning(image * 2 - 1, self.init_latent, image_mask, self.mask_round)
+        elif self.inpainting_fill == 3:
+            self.init_latent = self.init_latent * self.mask
+            self.extra_generation_params["Masked content"] = 'latent nothing'
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         x = self.rng.next()
