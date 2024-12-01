@@ -113,7 +113,7 @@ def plms(model, x, timesteps, extra_args=None, callback=None, disable=None):
 
         e_t = model(x, ts, **extra_args)
 
-        if len(old_eps) == 0:
+        if not old_eps:
             # Pseudo Improved Euler (2nd order)
             x_prev, pred_x0 = get_x_prev_and_pred_x0(e_t, index)
             e_t_next = model(x_prev, t_next, **extra_args)
@@ -162,9 +162,7 @@ class UniPCCFG(uni_pc.UniPC):
     def model(self, x, t):
         t_input = self.get_model_input_time(t)
 
-        res = self.cfg_model(x, t_input, **self.extra_args)
-
-        return res
+        return self.cfg_model(x, t_input, **self.extra_args)
 
 
 def unipc(model, x, timesteps, extra_args=None, callback=None, disable=None, is_img2img=False):
