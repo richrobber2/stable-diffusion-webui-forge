@@ -27,8 +27,7 @@ class Scheduler:
 
 
 def uniform(n, sigma_min, sigma_max, inner_model, device):
-    sigmas = inner_model.get_sigmas(n).to(device)
-    return sigmas  # No change needed
+    return inner_model.get_sigmas(n).to(device)
 
 
 def sgm_uniform(n, sigma_min, sigma_max, inner_model, device):
@@ -74,15 +73,15 @@ def kl_optimal(n, sigma_min, sigma_max, device):
     alpha_max = torch.arctan(torch.tensor(sigma_max, device=device))
     step_indices = torch.arange(n + 1, device=device, dtype=torch.float32)
     step_indices.div_(n)  # In-place division
-    sigmas = torch.tan(step_indices * alpha_min + (1.0 - step_indices).mul_(alpha_max - alpha_min).add_(alpha_min))
-    return sigmas
+    return torch.tan(
+        step_indices * alpha_min
+        + (1.0 - step_indices).mul_(alpha_max - alpha_min).add_(alpha_min)
+    )
 
 
 def simple_scheduler(n, sigma_min, sigma_max, inner_model, device):
-    sigs = []
     ss = len(inner_model.sigmas) / n
-    for x in range(n):
-        sigs += [float(inner_model.sigmas[-(1 + int(x * ss))])]
+    sigs = [float(inner_model.sigmas[-(1 + int(x * ss))]) for x in range(n)]
     sigs += [0.0]
     return torch.FloatTensor(sigs).to(device)
 
