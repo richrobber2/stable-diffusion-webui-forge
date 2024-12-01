@@ -61,10 +61,7 @@ class ScriptPostprocessingUpscale(scripts_postprocessing.ScriptPostprocessing):
                 return gr.update()
 
             match = re.search(r'(\d)[xX]|[xX](\d)', upscale_method)
-            if not match:
-                return gr.update()
-
-            return gr.update(value=int(match.group(1) or match.group(2)))
+            return gr.update(value=int(match[1] or match[2])) if match else gr.update()
 
         upscaling_res_switch_btn.click(lambda w, h: (h, w), inputs=[upscaling_resize_w, upscaling_resize_h], outputs=[upscaling_resize_w, upscaling_resize_h], show_progress=False)
         tab_scale_by.select(fn=lambda: 0, inputs=[], outputs=[selected_tab])
