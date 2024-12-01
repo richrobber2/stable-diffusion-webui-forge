@@ -212,54 +212,55 @@ class ControlBase:
         return 0
 
     def control_merge(self, control_input, control_output, control_prev, output_dtype):
+        out = self.initialize_output(control_input, control_output, output_dtype)
+        out = compute_controlnet_weighting(out, self)
+        self.merge_previous_control(out, control_prev)
+        return out
+
+    def initialize_output(self, control_input, control_output, output_dtype):
         out = {'input': [], 'middle': [], 'output': []}
+        self.process_control_input(control_input, out, output_dtype)
+        self.process_control_output(control_output, out, output_dtype)
+        return out
 
+    def process_control_input(self, control_input, out, output_dtype):
         if control_input is not None:
-            for i in range(len(control_input)):
-                key = 'input'
-                x = control_input[i]
+            for i, x in enumerate(control_input):
                 if x is not None:
-                    x *= self.strength
-                    if x.dtype != output_dtype:
-                        x = x.to(output_dtype)
-                out[key].insert(0, x)
+                    x = self.adjust_dtype_and_strength(x, output_dtype)
+                out['input'].insert(0, x)
 
+    def process_control_output(self, control_output, out, output_dtype):
         if control_output is not None:
-            for i in range(len(control_output)):
-                if i == (len(control_output) - 1):
-                    key = 'middle'
-                    index = 0
-                else:
-                    key = 'output'
-                    index = i
-                x = control_output[i]
+            for i, x in enumerate(control_output):
+                key = 'middle' if i == (len(control_output) - 1) else 'output'
                 if x is not None:
                     if self.global_average_pooling:
                         x = torch.mean(x, dim=(2, 3), keepdim=True).repeat(1, 1, x.shape[2], x.shape[3])
-
-                    x *= self.strength
-                    if x.dtype != output_dtype:
-                        x = x.to(output_dtype)
-
+                    x = self.adjust_dtype_and_strength(x, output_dtype)
                 out[key].append(x)
 
-        out = compute_controlnet_weighting(out, self)
+    def adjust_dtype_and_strength(self, tensor, output_dtype):
+        tensor *= self.strength
+        if tensor.dtype != output_dtype:
+            tensor = tensor.to(output_dtype)
+        return tensor
 
-        if control_prev is not None:
-            for x in ['input', 'middle', 'output']:
-                o = out[x]
-                for i in range(len(control_prev[x])):
-                    prev_val = control_prev[x][i]
-                    if i >= len(o):
-                        o.append(prev_val)
-                    elif prev_val is not None:
-                        if o[i] is None:
-                            o[i] = prev_val
-                        elif o[i].shape[0] < prev_val.shape[0]:
-                            o[i] = prev_val + o[i]
-                        else:
-                            o[i] += prev_val
-        return out
+    def merge_previous_control(self, out, control_prev):
+        if control_prev is None:
+            return
+        for key in ['input', 'middle', 'output']:
+            o = out[key]
+            for i, prev_val in enumerate(control_prev[key]):
+                if i >= len(o):
+                    o.append(prev_val)
+                elif prev_val is not None:
+                    if o[i] is None:
+                        o[i] = prev_val
+                    elif o[i].shape[0] < prev_val.shape[0]:
+                        o[i] = prev_val + o[i]
+                    else:
+                        o[i] += prev_val
 
 
 class ControlNet(ControlBase):
@@ -540,15 +541,7 @@ def load_t2i_adapter(t2i_data):
         cin = t2i_data['body.0.in_conv.weight'].shape[1]
         model_ad = t2i_adapter.Adapter_light(cin=cin, channels=[320, 640, 1280, 1280], nums_rb=4)
     elif 'conv_in.weight' in keys:
-        cin = t2i_data['conv_in.weight'].shape[1]
-        channel = t2i_data['conv_in.weight'].shape[0]
-        ksize = t2i_data['body.0.block2.weight'].shape[2]
-        use_conv = False
-        down_opts = list(filter(lambda a: a.endswith("down_opt.op.weight"), keys))
-        if down_opts:
-            use_conv = True
-        xl = cin in [256, 768]
-        model_ad = t2i_adapter.Adapter(cin=cin, channels=[channel, channel * 2, channel * 4, channel * 4][:4], nums_rb=2, ksize=ksize, sk=True, use_conv=use_conv, xl=xl)
+        model_ad = _extracted_from_load_t2i_adapter_18(t2i_data, keys)
     else:
         return None
 
@@ -560,3 +553,22 @@ def load_t2i_adapter(t2i_data):
         print("t2i unexpected", unexpected)
 
     return T2IAdapter(model_ad, model_ad.input_channels)
+
+
+# TODO Rename this here and in `load_t2i_adapter`
+def _extracted_from_load_t2i_adapter_18(t2i_data, keys):
+    cin = t2i_data['conv_in.weight'].shape[1]
+    channel = t2i_data['conv_in.weight'].shape[0]
+    ksize = t2i_data['body.0.block2.weight'].shape[2]
+    down_opts = list(filter(lambda a: a.endswith("down_opt.op.weight"), keys))
+    use_conv = bool(down_opts)
+    xl = cin in [256, 768]
+    return t2i_adapter.Adapter(
+        cin=cin,
+        channels=[channel, channel * 2, channel * 4, channel * 4][:4],
+        nums_rb=2,
+        ksize=ksize,
+        sk=True,
+        use_conv=use_conv,
+        xl=xl,
+    )
