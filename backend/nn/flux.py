@@ -14,12 +14,11 @@ from backend.utils import fp16_fix, tensor2parameter
 
 def attention(q, k, v, pe):
     q, k = apply_rope(q, k, pe)
-    x = attention_function(q, k, v, q.shape[1], skip_reshape=True)
-    return x
+    return attention_function(q, k, v, q.shape[1], skip_reshape=True)
 
 
 def rope(pos, dim, theta):
-    if pos.device.type == "mps" or pos.device.type == "xpu":
+    if pos.device.type in ["mps", "xpu"]:
         scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
     else:
         scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
@@ -174,8 +173,9 @@ class Modulation(nn.Module):
         self.lin = nn.Linear(dim, self.multiplier * dim, bias=True)
 
     def forward(self, vec):
-        out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
-        return out
+        return self.lin(nn.functional.silu(vec))[:, None, :].chunk(
+            self.multiplier, dim=-1
+        )
 
 
 class DoubleStreamBlock(nn.Module):
