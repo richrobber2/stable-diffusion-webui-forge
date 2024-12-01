@@ -95,7 +95,7 @@ def progressapi(req: ProgressRequest):
         if queued:
             sorted_queued = sorted(pending_tasks.keys(), key=lambda x: pending_tasks[x])
             queue_index = sorted_queued.index(req.id_task)
-            textinfo = "In queue: {}/{}".format(queue_index + 1, len(sorted_queued))
+            textinfo = f"In queue: {queue_index + 1}/{len(sorted_queued)}"
         return ProgressResponse(active=active, queued=queued, completed=completed, id_live_preview=-1, textinfo=textinfo)
 
     progress = 0
