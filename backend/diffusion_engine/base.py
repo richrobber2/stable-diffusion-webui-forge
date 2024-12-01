@@ -74,8 +74,9 @@ class ForgeDiffusionEngine:
 
     def save_checkpoint(self, filename):
         sd = {}
-        sd.update(
-            utils.get_state_dict_after_quant(self.forge_objects.unet.model.diffusion_model, prefix='model.diffusion_model.')
+        sd |= utils.get_state_dict_after_quant(
+            self.forge_objects.unet.model.diffusion_model,
+            prefix='model.diffusion_model.',
         )
         sd.update(
             utils.get_state_dict_after_quant(self.forge_objects.clip.cond_stage_model, prefix='text_encoders.')
