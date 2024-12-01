@@ -67,16 +67,17 @@ class CompVisSampler(sd_samplers_common.Sampler):
 
         steps += 1 if discard_next_to_last_sigma else 0
 
-        timesteps = torch.clip(torch.asarray(list(range(0, 1000, 1000 // steps)), device=devices.device) + 1, 0, 999)
-
-        return timesteps
+        return torch.clip(
+            torch.asarray(
+                list(range(0, 1000, 1000 // steps)), device=devices.device
+            )
+            + 1,
+            0,
+            999,
+        )
 
     def sample_img2img(self, p, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
-        unet_patcher = self.model_wrap.inner_model.forge_objects.unet
-        sampling_prepare(self.model_wrap.inner_model.forge_objects.unet, x=x)
-
-        self.model_wrap.inner_model.alphas_cumprod = self.model_wrap.inner_model.alphas_cumprod.to(x.device)
-
+        unet_patcher = self._extracted_from_sample_2(x)
         steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
 
         timesteps = self.get_timesteps(p, steps).to(x.device)
@@ -115,18 +116,10 @@ class CompVisSampler(sd_samplers_common.Sampler):
 
         samples = self.launch_sampling(t_enc + 1, lambda: self.func(self.model_wrap_cfg, xi, extra_args=self.sampler_extra_args, disable=False, callback=self.callback_state, **extra_params_kwargs))
 
-        self.add_infotext(p)
-
-        sampling_cleanup(unet_patcher)
-
-        return samples
+        return self._extracted_from_sample_45(p, unet_patcher, samples)
 
     def sample(self, p, x, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
-        unet_patcher = self.model_wrap.inner_model.forge_objects.unet
-        sampling_prepare(self.model_wrap.inner_model.forge_objects.unet, x=x)
-
-        self.model_wrap.inner_model.alphas_cumprod = self.model_wrap.inner_model.alphas_cumprod.to(x.device)
-
+        unet_patcher = self._extracted_from_sample_2(x)
         steps = steps or p.steps
         timesteps = self.get_timesteps(p, steps).to(x.device)
 
@@ -146,11 +139,22 @@ class CompVisSampler(sd_samplers_common.Sampler):
         }
         samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, x, extra_args=self.sampler_extra_args, disable=False, callback=self.callback_state, **extra_params_kwargs))
 
+        return self._extracted_from_sample_45(p, unet_patcher, samples)
+
+    # TODO Rename this here and in `sample_img2img` and `sample`
+    def _extracted_from_sample_45(self, p, unet_patcher, samples):
         self.add_infotext(p)
-
         sampling_cleanup(unet_patcher)
-
         return samples
+
+    # TODO Rename this here and in `sample_img2img` and `sample`
+    def _extracted_from_sample_2(self, x):
+        result = self.model_wrap.inner_model.forge_objects.unet
+        sampling_prepare(self.model_wrap.inner_model.forge_objects.unet, x=x)
+        self.model_wrap.inner_model.alphas_cumprod = (
+            self.model_wrap.inner_model.alphas_cumprod.to(x.device)
+        )
+        return result
 
 
 sys.modules['modules.sd_samplers_compvis'] = sys.modules[__name__]
