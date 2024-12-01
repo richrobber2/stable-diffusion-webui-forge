@@ -1,3 +1,4 @@
+import contextlib
 import os
 from abc import abstractmethod
 
@@ -41,11 +42,9 @@ class Upscaler:
         if self.model_path and create_dirs:
             os.makedirs(self.model_path, exist_ok=True)
 
-        try:
+        with contextlib.suppress(Exception):
             import cv2  # noqa: F401
             self.can_tile = True
-        except Exception:
-            pass
 
     @abstractmethod
     def do_upscale(self, img: PIL.Image, selected_model: str):
@@ -71,7 +70,7 @@ class Upscaler:
                 break
 
         if img.width != dest_w or img.height != dest_h:
-            img = img.resize((int(dest_w), int(dest_h)), resample=LANCZOS)
+            img = img.resize((dest_w, dest_h), resample=LANCZOS)
 
         return img
 
