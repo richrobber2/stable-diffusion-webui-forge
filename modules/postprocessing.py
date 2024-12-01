@@ -1,3 +1,4 @@
+import contextlib
 import os
 
 from PIL import Image
@@ -100,14 +101,11 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
                 fullfn, _ = images.save_image(pp.image, path=outpath, basename=basename, extension=opts.samples_format, info=infotext, short_filename=True, no_prompt=True, grid=False, pnginfo_section_name="postprocessing", existing_info=existing_pnginfo, forced_filename=forced_filename, suffix=suffix)
 
                 if pp.caption:
-                    caption_filename = os.path.splitext(fullfn)[0] + ".txt"
+                    caption_filename = f"{os.path.splitext(fullfn)[0]}.txt"
                     existing_caption = ""
-                    try:
+                    with contextlib.suppress(FileNotFoundError):
                         with open(caption_filename, encoding="utf8") as file:
                             existing_caption = file.read().strip()
-                    except FileNotFoundError:
-                        pass
-
                     action = shared.opts.postprocessing_existing_caption_action
                     if action == 'Prepend' and existing_caption:
                         caption = f"{existing_caption} {pp.caption}"
