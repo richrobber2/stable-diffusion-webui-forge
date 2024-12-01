@@ -80,28 +80,26 @@ onAfterUiUpdate(function() {
     }
 
     var tabImg2img = gradioApp().querySelector("#tab_img2img");
-    if (tabImg2img) {
-        if (tabImg2img.style.display == "block") {
-            let inputs = gradioApp().querySelectorAll('input');
-            inputs.forEach(function(e) {
-                var is_width = (e.parentElement.id == "img2img_width" && e.type == "range") || 
-					(e.parentElement.parentElement.parentElement.id == "img2img_width" && e.type == "number");
-                var is_height = (e.parentElement.id == "img2img_height" && e.type == "range") || 
-					(e.parentElement.parentElement.parentElement.id == "img2img_height" && e.type == "number");
-
-                if ((is_width || is_height) && !e.classList.contains('scrollwatch')) {
-                    e.addEventListener('input', function(e) {
-                        dimensionChange(e, is_width, is_height);
-                    });
-                    e.classList.add('scrollwatch');
-                }
-                if (is_width) {
-                    currentWidth = e.value * 1.0;
-                }
-                if (is_height) {
-                    currentHeight = e.value * 1.0;
-                }
-            });
-        }
+    if (tabImg2img && tabImg2img.style.display == "block") {
+          let inputs = gradioApp().querySelectorAll('input');
+          inputs.forEach(function(e) {
+              var is_width = (e.parentElement.id == "img2img_width" && e.type == "range") || 
+    					(e.parentElement.parentElement.parentElement.id == "img2img_width" && e.type == "number");
+              var is_height = (e.parentElement.id == "img2img_height" && e.type == "range") || 
+    					(e.parentElement.parentElement.parentElement.id == "img2img_height" && e.type == "number");
+    
+              if ((is_width || is_height) && !e.classList.contains('scrollwatch')) {
+                  e.addEventListener('input', function(e) {
+                      dimensionChange(e, is_width, is_height);
+                  });
+                  e.classList.add('scrollwatch');
+              }
+              if (is_width) {
+                  currentWidth = e.value * 1.0;
+              }
+              if (is_height) {
+                  currentHeight = e.value * 1.0;
+              }
+          });
     }
 });
