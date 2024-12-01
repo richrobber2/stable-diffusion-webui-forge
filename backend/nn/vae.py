@@ -25,8 +25,9 @@ class DiagonalGaussianDistribution:
             self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
     def sample(self):
-        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
-        return x
+        return self.mean + self.std * torch.randn(self.mean.shape).to(
+            device=self.parameters.device
+        )
 
     def mode(self):
         return self.mean
@@ -108,10 +109,7 @@ class ResnetBlock(nn.Module):
         h = self.dropout(h)
         h = self.conv2(h)
         if self.in_channels != self.out_channels:
-            if self.use_conv_shortcut:
-                x = self.conv_shortcut(x)
-            else:
-                x = self.nin_shortcut(x)
+            x = self.conv_shortcut(x) if self.use_conv_shortcut else self.nin_shortcut(x)
         return x + h
 
 
