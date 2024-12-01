@@ -55,8 +55,8 @@ class ControlNetPatcher(ControlModelPatcher):
             while loop:
                 suffix = [".weight", ".bias"]
                 for s in suffix:
-                    k_in = "controlnet_down_blocks.{}{}".format(count, s)
-                    k_out = "zero_convs.{}.0{}".format(count, s)
+                    k_in = f"controlnet_down_blocks.{count}{s}"
+                    k_out = f"zero_convs.{count}.0{s}"
                     if k_in not in controlnet_data:
                         loop = False
                         break
@@ -69,7 +69,7 @@ class ControlNetPatcher(ControlModelPatcher):
                 suffix = [".weight", ".bias"]
                 for s in suffix:
                     if count == 0:
-                        k_in = "controlnet_cond_embedding.conv_in{}".format(s)
+                        k_in = f"controlnet_cond_embedding.conv_in{s}"
                     else:
                         k_in = "controlnet_cond_embedding.blocks.{}{}".format(count - 1, s)
                     k_out = "input_hint_block.{}{}".format(count * 2, s)
@@ -79,11 +79,11 @@ class ControlNetPatcher(ControlModelPatcher):
                     diffusers_keys[k_in] = k_out
                 count += 1
 
-            new_sd = {}
-            for k in diffusers_keys:
-                if k in controlnet_data:
-                    new_sd[diffusers_keys[k]] = controlnet_data.pop(k)
-
+            new_sd = {
+                diffusers_keys[k]: controlnet_data.pop(k)
+                for k in diffusers_keys
+                if k in controlnet_data
+            }
             leftover_keys = controlnet_data.keys()
             if len(leftover_keys) > 0:
                 print("leftover keys:", leftover_keys)
