@@ -22,7 +22,9 @@ class KModel(torch.nn.Module):
         else:
             self.predictor = k_predictor
 
-    def apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None, transformer_options={}, **kwargs):
+    def apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None, transformer_options=None, **kwargs):
+        if transformer_options is None:
+            transformer_options = {}
         sigma = t
         xc = self.predictor.calculate_input(sigma, x)
         if c_concat is not None:
@@ -34,13 +36,11 @@ class KModel(torch.nn.Module):
         xc = xc.to(dtype=dtype, non_blocking=True)
         t = self.predictor.timestep(t).float()
         context = context.to(dtype=dtype, non_blocking=True)
-        
+
         extra_conds = {}
-        for o in kwargs:
-            extra = kwargs[o]
-            if hasattr(extra, "dtype"):
-                if extra.dtype != torch.int and extra.dtype != torch.long:
-                    extra = extra.to(dtype=dtype, non_blocking=True)
+        for o, extra in kwargs.items():
+            if hasattr(extra, "dtype") and extra.dtype not in [torch.int, torch.long]:
+                extra = extra.to(dtype=dtype, non_blocking=True)
             extra_conds[o] = extra
 
         model_output = self.diffusion_model(xc, t, context=context, control=control, transformer_options=transformer_options, **extra_conds)
