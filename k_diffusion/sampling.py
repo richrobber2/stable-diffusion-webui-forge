@@ -150,9 +150,9 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         d = to_d(x, sigmas[i], denoised)
         # Euler method
         dt = sigma_down - sigmas[i]
-        x += d * dt
+        x.add_(d * dt)  # In-place add for Euler step
         if sigmas[i + 1] > 0:
-            x += noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x.add_(noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up)  # In-place add for noise
     return x
 
 
