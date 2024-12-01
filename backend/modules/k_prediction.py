@@ -21,14 +21,7 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
                 torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
         )
     elif schedule == "cosine":
-        timesteps = (
-                torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
-        )
-        alphas = timesteps / (1 + cosine_s) * np.pi / 2
-        alphas = torch.cos(alphas).pow(2)
-        alphas = alphas / alphas[0]
-        betas = 1 - alphas[1:] / alphas[:-1]
-        betas = torch.clamp(betas, min=0, max=0.999)
+        betas = _extracted_from_make_beta_schedule_7(n_timestep, cosine_s)
     elif schedule == "sqrt_linear":
         betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64)
     elif schedule == "sqrt":
@@ -38,10 +31,20 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
     return betas
 
 
+# TODO Rename this here and in `make_beta_schedule`
+def _extracted_from_make_beta_schedule_7(n_timestep, cosine_s):
+    timesteps = (
+            torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
+    )
+    alphas = timesteps / (1 + cosine_s) * np.pi / 2
+    alphas = torch.cos(alphas).pow(2)
+    alphas = alphas / alphas[0]
+    result = 1 - alphas[1:] / alphas[:-1]
+    return torch.clamp(result, min=0, max=0.999)
+
+
 def time_snr_shift(alpha, t):
-    if alpha == 1.0:
-        return t
-    return alpha * t / (1 + (alpha - 1) * t)
+    return t if alpha == 1.0 else alpha * t / (1 + (alpha - 1) * t)
 
 
 def rescale_zero_terminal_snr_sigmas(sigmas):
@@ -74,9 +77,8 @@ class AbstractPrediction(torch.nn.Module):
     def calculate_input(self, sigma, noise):
         if self.prediction_type == 'const':
             return noise
-        else:
-            sigma = sigma.view(sigma.shape[:1] + (1,) * (noise.ndim - 1))
-            return noise / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
+        sigma = sigma.view(sigma.shape[:1] + (1,) * (noise.ndim - 1))
+        return noise / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
 
     def calculate_denoised(self, sigma, model_output, model_input):
         sigma = sigma.view(sigma.shape[:1] + (1,) * (model_output.ndim - 1))
@@ -94,20 +96,14 @@ class AbstractPrediction(torch.nn.Module):
     def noise_scaling(self, sigma, noise, latent_image, max_denoise=False):
         if self.prediction_type == 'const':
             return sigma * noise + (1.0 - sigma) * latent_image
-        else:
-            if max_denoise:
-                noise = noise * torch.sqrt(1.0 + sigma ** 2.0)
-            else:
-                noise = noise * sigma
-
-            noise += latent_image
-            return noise
+        noise = (
+            noise * torch.sqrt(1.0 + sigma**2.0) if max_denoise else noise * sigma
+        )
+        noise += latent_image
+        return noise
 
     def inverse_noise_scaling(self, sigma, latent):
-        if self.prediction_type == 'const':
-            return latent / (1.0 - sigma)
-        else:
-            return latent
+        return latent / (1.0 - sigma) if self.prediction_type == 'const' else latent
 
 
 class Prediction(AbstractPrediction):
@@ -245,9 +241,7 @@ class PredictionFlow(AbstractPrediction):
     def percent_to_sigma(self, percent):
         if percent <= 0.0:
             return 1.0
-        if percent >= 1.0:
-            return 0.0
-        return 1.0 - percent
+        return 0.0 if percent >= 1.0 else 1.0 - percent
 
 
 class PredictionFlux(AbstractPrediction):
@@ -285,16 +279,13 @@ class PredictionFlux(AbstractPrediction):
     def percent_to_sigma(self, percent):
         if percent <= 0.0:
             return 1.0
-        if percent >= 1.0:
-            return 0.0
-        return 1.0 - percent
+        return 0.0 if percent >= 1.0 else 1.0 - percent
 
 
 def k_prediction_from_diffusers_scheduler(scheduler):
-    if hasattr(scheduler.config, 'prediction_type') and scheduler.config.prediction_type in ["epsilon", "v_prediction"]:
-        if scheduler.config.beta_schedule == "scaled_linear":
-            return Prediction(sigma_data=1.0, prediction_type=scheduler.config.prediction_type, beta_schedule='linear',
-                              linear_start=scheduler.config.beta_start, linear_end=scheduler.config.beta_end,
-                              timesteps=scheduler.config.num_train_timesteps)
+    if hasattr(scheduler.config, 'prediction_type') and scheduler.config.prediction_type in ["epsilon", "v_prediction"] and scheduler.config.beta_schedule == "scaled_linear":
+        return Prediction(sigma_data=1.0, prediction_type=scheduler.config.prediction_type, beta_schedule='linear',
+                          linear_start=scheduler.config.beta_start, linear_end=scheduler.config.beta_end,
+                          timesteps=scheduler.config.num_train_timesteps)
 
     raise NotImplementedError(f'Failed to recognize {scheduler}')
