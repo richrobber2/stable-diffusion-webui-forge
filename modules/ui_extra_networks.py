@@ -1,3 +1,4 @@
+import contextlib
 import functools
 import os.path
 import urllib.parse
@@ -91,7 +92,13 @@ def register_page(page):
 
     extra_pages.append(page)
     allowed_dirs.clear()
-    allowed_dirs.update(set(sum([x.allowed_directories_for_previews() for x in extra_pages], [])))
+    allowed_dirs.update(
+        set(
+            sum(
+                (x.allowed_directories_for_previews() for x in extra_pages), []
+            )
+        )
+    )
 
 
 def fetch_file(filename: str = ""):
@@ -100,7 +107,10 @@ def fetch_file(filename: str = ""):
     if not os.path.isfile(filename):
         raise HTTPException(status_code=404, detail="File not found")
 
-    if not any(Path(x).absolute() in Path(filename).absolute().parents for x in allowed_dirs):
+    if all(
+        Path(x).absolute() not in Path(filename).absolute().parents
+        for x in allowed_dirs
+    ):
         raise ValueError(f"File cannot be fetched: {filename}. Must be in one of directories registered by extra pages.")
 
     ext = os.path.splitext(filename)[1].lower()[1:]
@@ -259,14 +269,14 @@ class ExtraNetworksPage:
                 Can be empty if the item is not meant to be shown.
             If no template is passed: A dictionary containing the generated item's attributes.
         """
-        preview = item.get("preview", None)
+        preview = item.get("preview")
         style_height = f"height: {shared.opts.extra_networks_card_height}px;" if shared.opts.extra_networks_card_height else ''
         style_width = f"width: {shared.opts.extra_networks_card_width}px;" if shared.opts.extra_networks_card_width else ''
         style_font_size = f"font-size: {shared.opts.extra_networks_card_text_scale*100}%;"
         card_style = style_height + style_width + style_font_size
         background_image = f'<img src="{html.escape(preview)}" class="preview" loading="lazy">' if preview else ''
 
-        onclick = item.get("onclick", None)
+        onclick = item.get("onclick")
         if onclick is None:     #   this path is 'Textual Inversion' and 'Lora'
             # Don't quote prompt/neg_prompt since they are stored as js strings already.
             onclick_js_tpl = "cardClicked('{tabname}', {prompt}, {neg_prompt}, {allow_neg});"
@@ -285,8 +295,7 @@ class ExtraNetworksPage:
 
         btn_copy_path = self.btn_copy_path_tpl.format(**{"filename": item["filename"]})
         btn_metadata = ""
-        metadata = item.get("metadata")
-        if metadata:
+        if metadata := item.get("metadata"):
             btn_metadata = self.btn_metadata_tpl.format(
                 **{
                     "extra_networks_tabname": self.extra_networks_tabname,
@@ -350,7 +359,7 @@ class ExtraNetworksPage:
             "local_preview": quote_js(item["local_preview"]),
             "metadata_button": btn_metadata,
             "name": html.escape(item["name"]),
-            "prompt": item.get("prompt", None),
+            "prompt": item.get("prompt"),
             "save_card_preview": html.escape(f"return saveCardPreview(event, '{tabname}', '{item['local_preview']}');"),
             "search_only": " search_only" if search_only else "",
             "search_terms": search_terms_html,
@@ -360,10 +369,7 @@ class ExtraNetworksPage:
             "extra_networks_tabname": self.extra_networks_tabname,
         }
 
-        if template:
-            return template.format(**args)
-        else:
-            return args
+        return template.format(**args) if template else args
 
     def create_tree_dir_item_html(
         self,
@@ -548,7 +554,10 @@ class ExtraNetworksPage:
                     if not is_empty and not subdir.endswith(os.path.sep):
                         subdir = subdir + os.path.sep
 
-                    if (os.path.sep + "." in subdir or subdir.startswith(".")) and not shared.opts.extra_networks_show_hidden_directories:
+                    if (
+                        (f"{os.path.sep}." in subdir or subdir.startswith("."))
+                        and not shared.opts.extra_networks_show_hidden_directories
+                    ):
                         continue
 
                     subdirs[subdir] = 1
@@ -556,13 +565,16 @@ class ExtraNetworksPage:
         if subdirs:
             subdirs = {"": 1, **subdirs}
 
-        subdirs_html = "".join([f"""
+        return "".join(
+            [
+                f"""
         <button class='lg secondary gradio-button custom-button{" search-all" if subdir == "" else ""}' onclick='extraNetworksSearchButton("{tabname}", "{self.extra_networks_tabname}", event)'>
         {html.escape(subdir if subdir != "" else "all")}
         </button>
-        """ for subdir in subdirs])
-
-        return subdirs_html
+        """
+                for subdir in subdirs
+            ]
+        )
 
     def create_card_view_html(self, tabname: str, *, none_message) -> str:
         """Generates HTML for the network Card View section for a tab.
@@ -577,10 +589,10 @@ class ExtraNetworksPage:
         Returns:
             HTML formatted string.
         """
-        res = []
-        for item in self.items.values():
-            res.append(self.create_item_html(tabname, item, self.card_tpl))
-
+        res = [
+            self.create_item_html(tabname, item, self.card_tpl)
+            for item in self.items.values()
+        ]
         if not res:
             dirs = "".join([f"<li>{x}</li>" for x in self.allowed_directories_for_previews()])
             res = [none_message or shared.html("extra-networks-no-cards.html").format(dirs=dirs)]
@@ -607,8 +619,7 @@ class ExtraNetworksPage:
 
         # Populate the instance metadata for each item.
         for item in self.items.values():
-            metadata = item.get("metadata")
-            if metadata:
+            if metadata := item.get("metadata"):
                 self.metadata[item["name"]] = metadata
 
             if "user_metadata" not in item:
@@ -664,13 +675,22 @@ class ExtraNetworksPage:
         Find a preview PNG for a given path (without extension) and call link_preview on it.
         """
 
-        potential_files = sum([[f"{path}.{ext}", f"{path}.preview.{ext}"] for ext in allowed_preview_extensions()], [])
+        potential_files = sum(
+            (
+                [f"{path}.{ext}", f"{path}.preview.{ext}"]
+                for ext in allowed_preview_extensions()
+            ),
+            [],
+        )
 
-        for file in potential_files:
-            if self.lister.exists(file):
-                return self.link_preview(file)
-
-        return None
+        return next(
+            (
+                self.link_preview(file)
+                for file in potential_files
+                if self.lister.exists(file)
+            ),
+            None,
+        )
 
     def find_embedded_preview(self, path, name, metadata):
         """
@@ -678,7 +698,11 @@ class ExtraNetworksPage:
         """
 
         file = f"{path}.safetensors"
-        if self.lister.exists(file) and 'ssmd_cover_images' in metadata and len(list(filter(None, json.loads(metadata['ssmd_cover_images'])))) > 0:
+        if (
+            self.lister.exists(file)
+            and 'ssmd_cover_images' in metadata
+            and list(filter(None, json.loads(metadata['ssmd_cover_images'])))
+        ):
             return f"./sd_extra_networks/cover-images?page={self.extra_networks_tabname}&item={name}"
 
         return None
@@ -691,11 +715,9 @@ class ExtraNetworksPage:
             if not self.lister.exists(file):
                 continue
 
-            try:
+            with contextlib.suppress(OSError):
                 with open(file, "r", encoding="utf-8", errors="replace") as f:
                     return f.read()
-            except OSError:
-                pass
         return None
 
     def create_user_metadata_editor(self, ui, tabname):
