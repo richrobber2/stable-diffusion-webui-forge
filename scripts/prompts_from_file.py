@@ -29,7 +29,7 @@ def process_float_tag(tag):
 
 
 def process_boolean_tag(tag):
-    return True if (tag == "true") else False
+    return tag == "true"
 
 
 prompt_tags = {
@@ -73,7 +73,7 @@ def cmdargs(line):
 
         tag = arg[2:]
 
-        if tag == "prompt" or tag == "negative_prompt":
+        if tag in ["prompt", "negative_prompt"]:
             pos += 1
             prompt = args[pos]
             pos += 1
@@ -85,7 +85,7 @@ def cmdargs(line):
             continue
 
 
-        func = prompt_tags.get(tag, None)
+        func = prompt_tags.get(tag)
         assert func, f'unknown commandline option: {arg}'
 
         val = args[pos+1]
@@ -102,9 +102,8 @@ def cmdargs(line):
 def load_prompt_file(file):
     if file is None:
         return None, gr.update(), gr.update(lines=7)
-    else:
-        lines = [x.strip() for x in file.decode('utf8', errors='ignore').split("\n")]
-        return None, "\n".join(lines), gr.update(lines=7)
+    lines = [x.strip() for x in file.decode('utf8', errors='ignore').split("\n")]
+    return None, "\n".join(lines), gr.update(lines=7)
 
 
 class Script(scripts.Script):
@@ -151,7 +150,7 @@ class Script(scripts.Script):
 
         print(f"Will process {len(lines)} lines in {job_count} jobs.")
         if (checkbox_iterate or checkbox_iterate_batch) and p.seed == -1:
-            p.seed = int(random.randrange(4294967294))
+            p.seed = random.randrange(4294967294)
 
         state.job_count = job_count
 
@@ -172,13 +171,13 @@ class Script(scripts.Script):
                 if prompt_position == "start":
                     copy_p.prompt = args.get("prompt") + " " + p.prompt
                 else:
-                    copy_p.prompt = p.prompt + " " + args.get("prompt")
+                    copy_p.prompt = f"{p.prompt} " + args.get("prompt")
 
             if args.get("negative_prompt") and p.negative_prompt:
                 if prompt_position == "start":
                     copy_p.negative_prompt = args.get("negative_prompt") + " " + p.negative_prompt
                 else:
-                    copy_p.negative_prompt = p.negative_prompt + " " + args.get("negative_prompt")
+                    copy_p.negative_prompt = f"{p.negative_prompt} " + args.get("negative_prompt")
 
             proc = process_images(copy_p)
             images += proc.images
