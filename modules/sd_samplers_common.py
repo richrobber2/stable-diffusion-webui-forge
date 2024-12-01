@@ -97,32 +97,34 @@ def images_tensor_to_samples(image, approximation=None, model=None):
 
     if approximation == 3:
         image = image.to(devices.device, devices.dtype)
-        x_latent = sd_vae_taesd.encoder_model()(image)
+        return sd_vae_taesd.encoder_model()(image)
     else:
         if model is None:
             model = shared.sd_model
 
         image = image.to(shared.device, dtype=devices.dtype_vae)
         image = image * 2 - 1
-        if len(image) > 1:
-            x_latent = torch.stack([
-                model.get_first_stage_encoding(
-                    model.encode_first_stage(torch.unsqueeze(img, 0))
-                )[0]
-                for img in image
-            ])
-        else:
-            x_latent = model.get_first_stage_encoding(model.encode_first_stage(image))
-
-    return x_latent
+        return (
+            torch.stack(
+                [
+                    model.get_first_stage_encoding(
+                        model.encode_first_stage(torch.unsqueeze(img, 0))
+                    )[0]
+                    for img in image
+                ]
+            )
+            if len(image) > 1
+            else model.get_first_stage_encoding(
+                model.encode_first_stage(image)
+            )
+        )
 
 
 def store_latent(decoded):
     state.current_latent = decoded
 
-    if opts.live_previews_enable and opts.show_progress_every_n_steps > 0 and shared.state.sampling_step % opts.show_progress_every_n_steps == 0:
-        if not shared.parallel_processing_allowed:
-            shared.state.assign_current_image(sample_to_image(decoded))
+    if opts.live_previews_enable and opts.show_progress_every_n_steps > 0 and shared.state.sampling_step % opts.show_progress_every_n_steps == 0 and not shared.parallel_processing_allowed:
+        shared.state.assign_current_image(sample_to_image(decoded))
 
 
 def is_sampler_using_eta_noise_seed_delta(p):
@@ -138,10 +140,7 @@ def is_sampler_using_eta_noise_seed_delta(p):
     if eta is None and sampler_config is not None:
         eta = 0 if sampler_config.options.get("default_eta_is_0", False) else 1.0
 
-    if eta == 0:
-        return False
-
-    return sampler_config.options.get("uses_ensd", False)
+    return False if eta == 0 else sampler_config.options.get("uses_ensd", False)
 
 
 class InterruptedException(BaseException):
@@ -164,46 +163,47 @@ def apply_refiner(cfg_denoiser, x):
     completed_ratio = cfg_denoiser.step / cfg_denoiser.total_steps
     refiner_switch_at = cfg_denoiser.p.refiner_switch_at
     refiner_checkpoint_info = cfg_denoiser.p.refiner_checkpoint_info
-    
+
     if refiner_switch_at is not None and completed_ratio < refiner_switch_at:
         return False
-    
+
     if refiner_checkpoint_info is None or shared.sd_model.sd_checkpoint_info == refiner_checkpoint_info:
         return False
-    
+
     if getattr(cfg_denoiser.p, "enable_hr", False):
         is_second_pass = cfg_denoiser.p.is_hr_pass
-    
+
         if opts.hires_fix_refiner_pass == "first pass" and is_second_pass:
             return False
-    
+
         if opts.hires_fix_refiner_pass == "second pass" and not is_second_pass:
             return False
-    
+
         if opts.hires_fix_refiner_pass != "second pass":
             cfg_denoiser.p.extra_generation_params['Hires refiner'] = opts.hires_fix_refiner_pass
-    
+
     cfg_denoiser.p.extra_generation_params['Refiner'] = refiner_checkpoint_info.short_title
     cfg_denoiser.p.extra_generation_params['Refiner switch at'] = refiner_switch_at
-    
+
     sampling_cleanup(sd_models.model_data.get_sd_model().forge_objects.unet)
-    
+
     with sd_models.SkipWritingToConfig():
         fp_checkpoint = getattr(shared.opts, 'sd_model_checkpoint')
-        checkpoint_changed = main_entry.checkpoint_change(refiner_checkpoint_info.short_title, save=False, refresh=False)
-        if checkpoint_changed:
+        if checkpoint_changed := main_entry.checkpoint_change(
+            refiner_checkpoint_info.short_title, save=False, refresh=False
+        ):
             try:
                 main_entry.refresh_model_loading_parameters()
                 sd_models.forge_model_reload()
             finally:
                 main_entry.checkpoint_change(fp_checkpoint, save=False, refresh=True)
-    
+
     if not cfg_denoiser.p.disable_extra_networks:
         extra_networks.activate(cfg_denoiser.p, cfg_denoiser.p.extra_network_data)
-    
+
     cfg_denoiser.p.setup_conds()
     cfg_denoiser.update_inner_model()
-    
+
     sampling_prepare(sd_models.model_data.get_sd_model().forge_objects.unet, x=x)
     return True
 
@@ -301,11 +301,12 @@ class Sampler:
 
         k_diffusion.sampling.torch = TorchHijack(p)
 
-        extra_params_kwargs = {}
-        for param_name in self.extra_params:
-            if hasattr(p, param_name) and param_name in inspect.signature(self.func).parameters:
-                extra_params_kwargs[param_name] = getattr(p, param_name)
-
+        extra_params_kwargs = {
+            param_name: getattr(p, param_name)
+            for param_name in self.extra_params
+            if hasattr(p, param_name)
+            and param_name in inspect.signature(self.func).parameters
+        }
         if 'eta' in inspect.signature(self.func).parameters:
             if self.eta != self.eta_default:
                 p.extra_generation_params[self.eta_infotext_field] = self.eta
