@@ -86,7 +86,12 @@ class CheckpointInfo:
         self.metadata = {}
         if self.is_safetensors:
             try:
-                self.metadata = cache.cached_data_for_file('safetensors-metadata', "checkpoint/" + name, filename, read_metadata)
+                self.metadata = cache.cached_data_for_file(
+                    'safetensors-metadata',
+                    f"checkpoint/{name}",
+                    filename,
+                    read_metadata,
+                )
             except Exception as e:
                 errors.display(e, f"reading metadata for {filename}")
 
@@ -96,7 +101,7 @@ class CheckpointInfo:
         self.hash = model_hash(filename)
 
         self.sha256 = hashes.sha256_from_cache(self.filename, f"checkpoint/{name}")
-        self.shorthash = self.sha256[0:10] if self.sha256 else None
+        self.shorthash = self.sha256[:10] if self.sha256 else None
 
         self.title = name if self.shorthash is None else f'{name} [{self.shorthash}]'
         self.short_title = self.name_for_extra if self.shorthash is None else f'{self.name_for_extra} [{self.shorthash}]'
@@ -115,8 +120,8 @@ class CheckpointInfo:
         if self.sha256 is None:
             return
 
-        shorthash = self.sha256[0:10]
-        if self.shorthash == self.sha256[0:10]:
+        shorthash = self.sha256[:10]
+        if self.shorthash == self.sha256[:10]:
             return self.shorthash
 
         self.shorthash = shorthash
@@ -199,17 +204,29 @@ def get_closet_checkpoint_match(search_string):
     if not search_string:
         return None
 
-    checkpoint_info = checkpoint_aliases.get(search_string, None)
+    checkpoint_info = checkpoint_aliases.get(search_string)
     if checkpoint_info is not None:
         return checkpoint_info
 
-    found = sorted([info for info in checkpoints_list.values() if search_string in info.title], key=lambda x: len(x.title))
-    if found:
+    if found := sorted(
+        [
+            info
+            for info in checkpoints_list.values()
+            if search_string in info.title
+        ],
+        key=lambda x: len(x.title),
+    ):
         return found[0]
 
     search_string_without_checksum = re.sub(re_strip_checksum, '', search_string)
-    found = sorted([info for info in checkpoints_list.values() if search_string_without_checksum in info.title], key=lambda x: len(x.title))
-    if found:
+    if found := sorted(
+        [
+            info
+            for info in checkpoints_list.values()
+            if search_string_without_checksum in info.title
+        ],
+        key=lambda x: len(x.title),
+    ):
         return found[0]
 
     return None
@@ -225,7 +242,7 @@ def model_hash(filename):
 
             file.seek(0x100000)
             m.update(file.read(0x10000))
-            return m.hexdigest()[0:8]
+            return m.hexdigest()[:8]
     except FileNotFoundError:
         return 'NOFILE'
 
@@ -234,7 +251,7 @@ def select_checkpoint():
     """Raises `FileNotFoundError` if no checkpoints are found."""
     model_checkpoint = shared.opts.sd_model_checkpoint
 
-    checkpoint_info = checkpoint_aliases.get(model_checkpoint, None)
+    checkpoint_info = checkpoint_aliases.get(model_checkpoint)
     if checkpoint_info is not None:
         return checkpoint_info
 
@@ -274,11 +291,9 @@ def read_metadata_from_safetensors(filename):
             json_obj = json.loads(json_data)
             for k, v in json_obj.get("__metadata__", {}).items():
                 res[k] = v
-                if isinstance(v, str) and v[0:1] == '{':
-                    try:
+                if isinstance(v, str) and v[:1] == '{':
+                    with contextlib.suppress(Exception):
                         res[k] = json.loads(v)
-                    except Exception:
-                        pass
         except Exception:
              errors.report(f"Error reading metadata from file: {filename}", exc_info=True)
 
@@ -468,7 +483,7 @@ def forge_model_reload():
     if model_data.forge_hash == current_hash:
         return model_data.sd_model, False
 
-    print('Loading Model: ' + str(model_data.forge_loading_parameters))
+    print(f'Loading Model: {str(model_data.forge_loading_parameters)}')
 
     timer = Timer()
 
