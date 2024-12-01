@@ -83,49 +83,68 @@ def unet_to_diffusers(unet_config):
         n = 1 + (num_res_blocks[x] + 1) * x
         for i in range(num_res_blocks[x]):
             for b in UNET_MAP_RESNET:
-                diffusers_unet_map["down_blocks.{}.resnets.{}.{}".format(x, i, UNET_MAP_RESNET[b])] = "input_blocks.{}.0.{}".format(n, b)
+                diffusers_unet_map[
+                    f"down_blocks.{x}.resnets.{i}.{UNET_MAP_RESNET[b]}"
+                ] = f"input_blocks.{n}.0.{b}"
             num_transformers = transformer_depth.pop(0)
             if num_transformers > 0:
                 for b in UNET_MAP_ATTENTIONS:
-                    diffusers_unet_map["down_blocks.{}.attentions.{}.{}".format(x, i, b)] = "input_blocks.{}.1.{}".format(n, b)
+                    diffusers_unet_map[
+                        f"down_blocks.{x}.attentions.{i}.{b}"
+                    ] = f"input_blocks.{n}.1.{b}"
                 for t in range(num_transformers):
                     for b in TRANSFORMER_BLOCKS:
-                        diffusers_unet_map["down_blocks.{}.attentions.{}.transformer_blocks.{}.{}".format(x, i, t, b)] = "input_blocks.{}.1.transformer_blocks.{}.{}".format(n, t, b)
+                        diffusers_unet_map[
+                            f"down_blocks.{x}.attentions.{i}.transformer_blocks.{t}.{b}"
+                        ] = f"input_blocks.{n}.1.transformer_blocks.{t}.{b}"
             n += 1
         for k in ["weight", "bias"]:
-            diffusers_unet_map["down_blocks.{}.downsamplers.0.conv.{}".format(x, k)] = "input_blocks.{}.0.op.{}".format(n, k)
+            diffusers_unet_map[f"down_blocks.{x}.downsamplers.0.conv.{k}"] = (
+                f"input_blocks.{n}.0.op.{k}"
+            )
 
     i = 0
     for b in UNET_MAP_ATTENTIONS:
-        diffusers_unet_map["mid_block.attentions.{}.{}".format(i, b)] = "middle_block.1.{}".format(b)
+        diffusers_unet_map[f"mid_block.attentions.{i}.{b}"] = f"middle_block.1.{b}"
     for t in range(transformers_mid):
         for b in TRANSFORMER_BLOCKS:
-            diffusers_unet_map["mid_block.attentions.{}.transformer_blocks.{}.{}".format(i, t, b)] = "middle_block.1.transformer_blocks.{}.{}".format(t, b)
+            diffusers_unet_map[
+                f"mid_block.attentions.{i}.transformer_blocks.{t}.{b}"
+            ] = f"middle_block.1.transformer_blocks.{t}.{b}"
 
     for i, n in enumerate([0, 2]):
         for b in UNET_MAP_RESNET:
-            diffusers_unet_map["mid_block.resnets.{}.{}".format(i, UNET_MAP_RESNET[b])] = "middle_block.{}.{}".format(n, b)
+            diffusers_unet_map[
+                f"mid_block.resnets.{i}.{UNET_MAP_RESNET[b]}"
+            ] = f"middle_block.{n}.{b}"
 
     num_res_blocks = list(reversed(num_res_blocks))
     for x in range(num_blocks):
         n = (num_res_blocks[x] + 1) * x
         l = num_res_blocks[x] + 1
         for i in range(l):
-            c = 0
             for b in UNET_MAP_RESNET:
-                diffusers_unet_map["up_blocks.{}.resnets.{}.{}".format(x, i, UNET_MAP_RESNET[b])] = "output_blocks.{}.0.{}".format(n, b)
-            c += 1
+                diffusers_unet_map[
+                    f"up_blocks.{x}.resnets.{i}.{UNET_MAP_RESNET[b]}"
+                ] = f"output_blocks.{n}.0.{b}"
+            c = 0 + 1
             num_transformers = transformer_depth_output.pop()
             if num_transformers > 0:
                 c += 1
                 for b in UNET_MAP_ATTENTIONS:
-                    diffusers_unet_map["up_blocks.{}.attentions.{}.{}".format(x, i, b)] = "output_blocks.{}.1.{}".format(n, b)
+                    diffusers_unet_map[f"up_blocks.{x}.attentions.{i}.{b}"] = (
+                        f"output_blocks.{n}.1.{b}"
+                    )
                 for t in range(num_transformers):
                     for b in TRANSFORMER_BLOCKS:
-                        diffusers_unet_map["up_blocks.{}.attentions.{}.transformer_blocks.{}.{}".format(x, i, t, b)] = "output_blocks.{}.1.transformer_blocks.{}.{}".format(n, t, b)
+                        diffusers_unet_map[
+                            f"up_blocks.{x}.attentions.{i}.transformer_blocks.{t}.{b}"
+                        ] = f"output_blocks.{n}.1.transformer_blocks.{t}.{b}"
             if i == l - 1:
                 for k in ["weight", "bias"]:
-                    diffusers_unet_map["up_blocks.{}.upsamplers.0.conv.{}".format(x, k)] = "output_blocks.{}.{}.conv.{}".format(n, c, k)
+                    diffusers_unet_map[
+                        f"up_blocks.{x}.upsamplers.0.conv.{k}"
+                    ] = f"output_blocks.{n}.{c}.conv.{k}"
             n += 1
 
     for k in UNET_MAP_BASIC:
