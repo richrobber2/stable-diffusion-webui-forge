@@ -168,10 +168,7 @@ def attention_sub_quad(query, key, value, heads, mask=None, attn_precision=None,
         query_chunk_size = 512
 
     if mask is not None:
-        if len(mask.shape) == 2:
-            bs = 1
-        else:
-            bs = mask.shape[0]
+        bs = 1 if len(mask.shape) == 2 else mask.shape[0]
         mask = mask.reshape(bs, -1, mask.shape[-2], mask.shape[-1]).expand(b, heads, -1, -1).reshape(-1, mask.shape[-2], mask.shape[-1])
 
     hidden_states = efficient_dot_product_attention(
@@ -228,7 +225,6 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
             element_size = q.element_size()
             upcast = False
 
-        gb = 1024 ** 3
         tensor_size = q.shape[0] * q.shape[1] * k.shape[1] * element_size
         # Improved memory requirement estimation
         modifier = 2.5 if element_size < 4 else 3
@@ -242,14 +238,12 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
 
         if steps > 64:
             max_res = math.floor(math.sqrt(math.sqrt(mem_free_total / 2.5)) / 8) * 64
+            gb = 1024 ** 3
             raise RuntimeError(f'Not enough memory, use lower resolution (max approx. {max_res}x{max_res}). '
                                f'Need: {mem_required / 64 / gb:0.1f}GB free, Have:{mem_free_total / gb:0.1f}GB free')
 
         if mask is not None:
-            if len(mask.shape) == 2:
-                bs = 1
-            else:
-                bs = mask.shape[0]
+            bs = 1 if len(mask.shape) == 2 else mask.shape[0]
             # In-place mask reshape
             mask = mask.reshape(bs, -1, mask.shape[-2], mask.shape[-1])
             mask = mask.expand(b, heads, -1, -1)
@@ -303,19 +297,18 @@ def attention_split(q, k, v, heads, mask=None, attn_precision=None, skip_reshape
                     del s2
                 break
             except memory_management.OOM_EXCEPTION as e:
-                if not first_op_done:
-                    memory_management.soft_empty_cache(True)
-                    if not cleared_cache:
-                        cleared_cache = True
-                        print("out of memory error, emptying cache and trying again")
-                        continue
-                    steps *= 2
-                    if steps > 64:
-                        raise e
-                    print("out of memory error, increasing steps and trying again {}".format(steps))
-                else:
+                if first_op_done:
                     raise e
 
+                memory_management.soft_empty_cache(True)
+                if not cleared_cache:
+                    cleared_cache = True
+                    print("out of memory error, emptying cache and trying again")
+                    continue
+                steps *= 2
+                if steps > 64:
+                    raise e
+                print(f"out of memory error, increasing steps and trying again {steps}")
         del q, k, v
 
         r1 = (
@@ -449,7 +442,7 @@ def xformers_attention_single_head_spatial(q, k, v):
         q, k, v = (t.view(B, C, -1).transpose(1, 2).contiguous() for t in (q, k, v))
         out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
         out = out.transpose(1, 2).reshape(B, C, H, W)
-    except (NotImplementedError, RuntimeError):
+    except RuntimeError:
         out = slice_attention_single_head_spatial(q.view(B, -1, C), k.view(B, -1, C).transpose(1, 2),
                                                   v.view(B, -1, C).transpose(1, 2)).reshape(B, C, H, W)
     return out
