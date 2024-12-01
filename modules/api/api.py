@@ -7,6 +7,7 @@ import uvicorn
 import ipaddress
 import requests
 import gradio as gr
+from contextlib import suppress
 from threading import Lock
 from io import BytesIO
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
@@ -85,16 +86,14 @@ def decode_base64_to_image(encoding):
         headers = {'user-agent': opts.api_useragent} if opts.api_useragent else {}
         response = requests.get(encoding, timeout=30, headers=headers)
         try:
-            image = images.read(BytesIO(response.content))
-            return image
+            return images.read(BytesIO(response.content))
         except Exception as e:
             raise HTTPException(status_code=500, detail="Invalid image url") from e
 
     if encoding.startswith("data:image/"):
         encoding = encoding.split(";")[1].split(",")[1]
     try:
-        image = images.read(BytesIO(base64.b64decode(encoding)))
-        return image
+        return images.read(BytesIO(base64.b64decode(encoding)))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Invalid encoded image") from e
 
@@ -134,16 +133,13 @@ def encode_pil_to_base64(image):
 
 def api_middleware(app: FastAPI):
     rich_available = False
-    try:
+    with suppress(Exception):
         if os.environ.get('WEBUI_RICH_EXCEPTIONS', None) is not None:
             import anyio  # importing just so it can be placed on silent list
             import starlette  # importing just so it can be placed on silent list
             from rich.console import Console
             console = Console()
             rich_available = True
-    except Exception:
-        pass
-
     @app.middleware("http")
     async def log_and_time(req: Request, call_next):
         ts = time.time()
@@ -279,9 +275,8 @@ class Api:
         return self.app.add_api_route(path, endpoint, **kwargs)
 
     def auth(self, credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
-        if credentials.username in self.credentials:
-            if compare_digest(credentials.password, self.credentials[credentials.username]):
-                return True
+        if credentials.username in self.credentials and compare_digest(credentials.password, self.credentials[credentials.username]):
+            return True
 
         raise HTTPException(status_code=401, detail="Incorrect username or password", headers={"WWW-Authenticate": "Basic"})
 
@@ -318,8 +313,7 @@ class Api:
         #find max idx from the scripts in runner and generate a none array to init script_args
         last_arg_index = 1
         for script in script_runner.scripts:
-            if last_arg_index < script.args_to:
-                last_arg_index = script.args_to
+            last_arg_index = max(last_arg_index, script.args_to)
         # None everywhere except position 0 to initialize script args
         script_args = [None]*last_arg_index
         script_args[0] = 0
@@ -328,9 +322,7 @@ class Api:
         with gr.Blocks(): # will throw errors calling ui function without this
             for script in script_runner.scripts:
                 if script.ui(script.is_img2img):
-                    ui_default_values = []
-                    for elem in script.ui(script.is_img2img):
-                        ui_default_values.append(elem.value)
+                    ui_default_values = [elem.value for elem in script.ui(script.is_img2img)]
                     script_args[script.args_from:script.args_to] = ui_default_values
         return script_args
 
@@ -358,7 +350,7 @@ class Api:
                 # always on script with no arg should always run so you don't really need to add them to the requests
                 if "args" in request.alwayson_scripts[alwayson_script_name]:
                     # min between arg length in scriptrunner and arg length in the request
-                    for idx in range(0, min((alwayson_script.args_to - alwayson_script.args_from), len(request.alwayson_scripts[alwayson_script_name]["args"]))):
+                    for idx in range(min((alwayson_script.args_to - alwayson_script.args_from), len(request.alwayson_scripts[alwayson_script_name]["args"]))):
                         script_args[alwayson_script.args_from + idx] = request.alwayson_scripts[alwayson_script_name]["args"][idx]
         return script_args
 
@@ -874,7 +866,7 @@ class Api:
             restart.restart_program()
         return Response(status_code=501)
 
-    def stop_webui(request):
+    def stop_webui(self):
         shared.state.server_command = "stop"
         return Response("Stopping.")
 
