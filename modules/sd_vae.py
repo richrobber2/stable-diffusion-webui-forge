@@ -22,10 +22,7 @@ checkpoints_loaded = collections.OrderedDict()
 
 
 def get_loaded_vae_name():
-    if loaded_vae_file is None:
-        return None
-
-    return os.path.basename(loaded_vae_file)
+    return None if loaded_vae_file is None else os.path.basename(loaded_vae_file)
 
 
 def get_loaded_vae_hash():
@@ -34,7 +31,7 @@ def get_loaded_vae_hash():
 
     sha256 = hashes.sha256(loaded_vae_file, 'vae')
 
-    return sha256[0:10] if sha256 else None
+    return sha256[:10] if sha256 else None
 
 
 def get_base_vae(model):
@@ -109,11 +106,14 @@ def refresh_vae_list():
 
 def find_vae_near_checkpoint(checkpoint_file):
     checkpoint_path = os.path.basename(checkpoint_file).rsplit('.', 1)[0]
-    for vae_file in vae_dict.values():
-        if os.path.basename(vae_file).startswith(checkpoint_path):
-            return vae_file
-
-    return None
+    return next(
+        (
+            vae_file
+            for vae_file in vae_dict.values()
+            if os.path.basename(vae_file).startswith(checkpoint_path)
+        ),
+        None,
+    )
 
 
 @dataclass
@@ -134,7 +134,7 @@ def resolve_vae_from_setting() -> VaeResolution:
     if shared.opts.sd_vae == "None":
         return VaeResolution()
 
-    vae_from_options = vae_dict.get(shared.opts.sd_vae, None)
+    vae_from_options = vae_dict.get(shared.opts.sd_vae)
     if vae_from_options is not None:
         return VaeResolution(vae_from_options, 'specified in settings')
 
@@ -151,7 +151,7 @@ def resolve_vae_from_user_metadata(checkpoint_file) -> VaeResolution:
         if vae_metadata == "None":
             return VaeResolution()
 
-        vae_from_metadata = vae_dict.get(vae_metadata, None)
+        vae_from_metadata = vae_dict.get(vae_metadata)
         if vae_from_metadata is not None:
             return VaeResolution(vae_from_metadata, "from user metadata")
 
