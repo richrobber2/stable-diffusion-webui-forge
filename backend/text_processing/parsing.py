@@ -61,7 +61,7 @@ def parse_prompt_attention(text):
     for pos in square_brackets:
         multiply_range(pos, square_bracket_multiplier)
 
-    if len(res) == 0:
+    if not res:
         res = [["", 1.0]]
 
     i = 0
