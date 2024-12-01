@@ -124,10 +124,22 @@ class ForgeSpace:
         else:
             results.append(build_html(title=self.title, installed=installed, url=None))
 
-        results.append(gr.update(interactive=not self.is_running and not (installed and not has_requirement), value=("Reinstall" if (installed and has_requirement) else "Install")))
-        results.append(gr.update(interactive=not self.is_running and installed))
-        results.append(gr.update(interactive=installed and not self.is_running))
-        results.append(gr.update(interactive=installed and self.is_running))
+        results.extend(
+            (
+                gr.update(
+                    interactive=not self.is_running
+                    and not (installed and not has_requirement),
+                    value=(
+                        "Reinstall"
+                        if (installed and has_requirement)
+                        else "Install"
+                    ),
+                ),
+                gr.update(interactive=not self.is_running and installed),
+                gr.update(interactive=installed and not self.is_running),
+                gr.update(interactive=installed and self.is_running),
+            )
+        )
         return results
 
     def install(self):
@@ -183,7 +195,10 @@ class ForgeSpace:
         modules_backup = {}
 
         for module_name in list(sys.modules.keys()):
-            if any(module_name.startswith(prefix + '.') or module_name == prefix for prefix in unsafe_module_prefixes):
+            if any(
+                module_name.startswith(f'{prefix}.') or module_name == prefix
+                for prefix in unsafe_module_prefixes
+            ):
                 modules_backup[module_name] = sys.modules[module_name]
                 del sys.modules[module_name]
 
