@@ -177,7 +177,7 @@ class EmbeddingDatabase:
         if data is not None:
             embedding = create_embedding_from_data(data, name, filename=filename, filepath=path)
 
-            if self.expected_shape == -1 or self.expected_shape == embedding.shape:
+            if self.expected_shape in [-1, embedding.shape]:
                 self.register_embedding(embedding)
             else:
                 self.skipped_embeddings[name] = embedding
@@ -219,11 +219,14 @@ class EmbeddingDatabase:
         if possible_matches is None:
             return None, None
 
-        for ids, embedding in possible_matches:
-            if tokens[offset:offset + len(ids)] == ids:
-                return embedding, len(ids)
-
-        return None, None
+        return next(
+            (
+                (embedding, len(ids))
+                for ids, embedding in possible_matches
+                if tokens[offset : offset + len(ids)] == ids
+            ),
+            (None, None),
+        )
 
 
 def create_embedding_from_data(data, name, filename='unknown embedding file', filepath=None):
