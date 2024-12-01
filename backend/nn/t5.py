@@ -136,11 +136,7 @@ class T5Attention(torch.nn.Module):
             past_bias = self.compute_bias(x.shape[1], x.shape[1], x.device, x.dtype)
 
         if past_bias is not None:
-            if mask is not None:
-                mask = mask + past_bias
-            else:
-                mask = past_bias
-
+            mask = mask + past_bias if mask is not None else past_bias
         # Use pre-computed scaling factor instead of runtime computation
         out = attention_function(q, k * self.scale_factor, v, self.num_heads, mask)
         return self.o(out), past_bias
