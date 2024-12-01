@@ -53,21 +53,37 @@ def model():
     loaded_model = sd_vae_approx_models.get(model_name)
 
     if loaded_model is None:
-        model_path = os.path.join(paths.models_path, "VAE-approx", model_name)
-        if not os.path.exists(model_path):
-            model_path = os.path.join(paths.script_path, "models", "VAE-approx", model_name)
-
-        if not os.path.exists(model_path):
-            model_path = os.path.join(paths.models_path, "VAE-approx", model_name)
-            download_model(model_path, 'https://github.com/AUTOMATIC1111/stable-diffusion-webui/releases/download/v1.0.0-pre/' + model_name)
-
-        loaded_model = VAEApprox(latent_channels=shared.sd_model.forge_objects.vae.latent_channels)
-        loaded_model.load_state_dict(torch.load(model_path, map_location='cpu' if devices.device.type != 'cuda' else None))
-        loaded_model.eval()
-        loaded_model.to(devices.device, devices.dtype)
-        sd_vae_approx_models[model_name] = loaded_model
-
+        loaded_model = _extracted_from_model_15(model_name)
     return loaded_model
+
+
+# TODO Rename this here and in `model`
+def _extracted_from_model_15(model_name):
+    model_path = os.path.join(paths.models_path, "VAE-approx", model_name)
+    if not os.path.exists(model_path):
+        model_path = os.path.join(paths.script_path, "models", "VAE-approx", model_name)
+
+    if not os.path.exists(model_path):
+        model_path = os.path.join(paths.models_path, "VAE-approx", model_name)
+        download_model(
+            model_path,
+            f'https://github.com/AUTOMATIC1111/stable-diffusion-webui/releases/download/v1.0.0-pre/{model_name}',
+        )
+
+    result = VAEApprox(
+        latent_channels=shared.sd_model.forge_objects.vae.latent_channels
+    )
+    result.load_state_dict(
+        torch.load(
+            model_path,
+            map_location='cpu' if devices.device.type != 'cuda' else None,
+        )
+    )
+    result.eval()
+    result.to(devices.device, devices.dtype)
+    sd_vae_approx_models[model_name] = result
+
+    return result
 
 
 def cheap_approximation(sample):
