@@ -421,7 +421,7 @@ def list_scripts(scriptdirname, extension, *, include_extensions=True):
                     continue
 
                 script_canonical_name = ("builtin/" if ext.is_builtin else "") + ext.canonical_name + "/" + extension_script.filename
-                relative_path = scriptdirname + "/" + extension_script.filename
+                relative_path = f"{scriptdirname}/{extension_script.filename}"
 
                 script = ScriptWithDependencies(
                     script_canonical_name=script_canonical_name,
@@ -438,14 +438,12 @@ def list_scripts(scriptdirname, extension, *, include_extensions=True):
         # load before requires inverse dependency
         # in this case, append the script name into the load_after list of the specified script
         for load_before in script.load_before:
-            # if this requires an individual script to be loaded before
-            other_script = scripts.get(load_before)
-            if other_script:
+            if other_script := scripts.get(load_before):
                 other_script.load_after.append(script_canonical_name)
 
-            # if this requires an extension
-            other_extension_scripts = loaded_extensions_scripts.get(load_before)
-            if other_extension_scripts:
+            if other_extension_scripts := loaded_extensions_scripts.get(
+                load_before
+            ):
                 for other_script in other_extension_scripts:
                     other_script.load_after.append(script_canonical_name)
 
@@ -467,9 +465,10 @@ def list_scripts(scriptdirname, extension, *, include_extensions=True):
         dependencies[script_canonical_name] = script.load_after
 
     ordered_scripts = topological_sort(dependencies)
-    scripts_list = [scripts[script_canonical_name].file for script_canonical_name in ordered_scripts]
-
-    return scripts_list
+    return [
+        scripts[script_canonical_name].file
+        for script_canonical_name in ordered_scripts
+    ]
 
 
 def list_files_with_name(filename):
