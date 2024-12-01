@@ -1,11 +1,10 @@
-
 def gradio_compile(items, prefix):
     names = []
     for k, v in items["required"].items():
         t = v[0]
         d = v[1] if len(v) > 1 else None
         if prefix != '':
-            name = (prefix + '_' + k).replace(' ', '_').lower()
+            name = f'{prefix}_{k}'.replace(' ', '_').lower()
         else:
             name = k.replace(' ', '_').lower()
 
@@ -13,17 +12,17 @@ def gradio_compile(items, prefix):
 
         if t == 'INT':
             default = int(d['default'])
-            min = int(d['min'])
-            max = int(d['max'])
+            min_val = int(d['min'])
+            max_val = int(d['max'])
             step = int(d.get('step', 1))
-            print(f'{name} = gr.Slider(label=\'{title}\', minimum={min}, maximum={max}, step={step}, value={default})')
+            print(f'{name} = gr.Slider(label=\'{title}\', minimum={min_val}, maximum={max_val}, step={step}, value={default})')
             names.append(name)
         elif t == 'FLOAT':
             default = float(d['default'])
-            min = float(d['min'])
-            max = float(d['max'])
+            min_val = float(d['min'])
+            max_val = float(d['max'])
             step = float(d.get('step', 0.001))
-            print(f'{name} = gr.Slider(label=\'{title}\', minimum={min}, maximum={max}, step={step}, value={default})')
+            print(f'{name} = gr.Slider(label=\'{title}\', minimum={min_val}, maximum={max_val}, step={step}, value={default})')
             names.append(name)
         elif isinstance(t, list):
             print(f'{name} = gr.Radio(label=\'{title}\', choices={str(t)}, value=\'{t[0]}\')')
@@ -38,10 +37,8 @@ def gradio_compile(items, prefix):
             pass
         elif t == 'IMAGE':
             pass
-        elif t == 'VAE':
-            pass
-        else:
-            print('error ' + str(t))
+        elif t != 'VAE':
+            print(f'error {str(t)}')
 
     return ['enabled'] + names
 
@@ -50,7 +47,7 @@ def print_info_text(name_list, prefix):
     print(', '.join(name_list))
     print('p.extra_generation_params.update(dict(')
     for n in name_list:
-        print(prefix + '_' + n + ' = ' + n + ', ')
+        print(f'{prefix}_{n} = {n}, ')
     print(')')
     return
 
