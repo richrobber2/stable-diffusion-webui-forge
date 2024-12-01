@@ -69,15 +69,14 @@ def base64_to_image(base64_str, numpy=True):
     image_data = base64.b64decode(base64_str)
     image = Image.open(BytesIO(image_data))
     image = image.convert("RGBA")
-    image_array = np.array(image) if numpy else image
-    return image_array
+    return np.array(image) if numpy else image
 
 
 class LogicalImage(gr.Textbox):
     @wraps(gr.Textbox.__init__)
     def __init__(self, *args, numpy=True, **kwargs):
         self.numpy = numpy
-        self.infotext = dict()
+        self.infotext = {}
 
         if 'value' in kwargs:
             initial_value = kwargs['value']
@@ -135,7 +134,7 @@ class ForgeCanvas:
             elem_id=None,
             elem_classes=None
     ):
-        self.uuid = 'uuid_' + uuid.uuid4().hex
+        self.uuid = f'uuid_{uuid.uuid4().hex}'
         self.block = gr.HTML(canvas_html.replace('forge_mixin', self.uuid), visible=visible, elem_id=elem_id, elem_classes=elem_classes)
         self.foreground = LogicalImage(visible=DEBUG_MODE, label='foreground', numpy=numpy, elem_id=self.uuid, elem_classes=['logical_image_foreground'])
         self.background = LogicalImage(visible=DEBUG_MODE, label='background', numpy=numpy, value=initial_image, elem_id=self.uuid, elem_classes=['logical_image_background'])
