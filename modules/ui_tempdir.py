@@ -51,10 +51,10 @@ def save_pil_to_file(pil_image, cache_dir=None, format="png"):
         return filename_with_mtime
 
     if shared.opts.temp_dir:
-        dir = shared.opts.temp_dir
+        temp_dir = shared.opts.temp_dir
     else:
-        dir = cache_dir
-        os.makedirs(dir, exist_ok=True)
+        temp_dir = cache_dir
+        os.makedirs(temp_dir, exist_ok=True)
 
     use_metadata = False
     metadata = PngImagePlugin.PngInfo()
@@ -194,6 +194,4 @@ def is_gradio_temp_path(path):
     if gradio_temp_dir := os.environ.get("GRADIO_TEMP_DIR"):
         if path.is_relative_to(gradio_temp_dir):
             return True
-    if path.is_relative_to(Path(tempfile.gettempdir()) / "gradio"):
-        return True
-    return False
+    return path.is_relative_to(Path(tempfile.gettempdir()) / "gradio")
