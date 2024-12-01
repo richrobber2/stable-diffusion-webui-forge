@@ -78,16 +78,15 @@ class UserMetadataEditor:
             preview_url = self.page.find_preview(filename)
             item["preview"] = preview_url
 
-        if preview_url:
-            preview = f'''
+        return (
+            f'''
             <div class='card standalone-card-preview'>
                 <img src="{html.escape(preview_url)}" class="preview">
             </div>
             '''
-        else:
-            preview = "<div class='card standalone-card-preview'></div>"
-
-        return preview
+            if preview_url
+            else "<div class='card standalone-card-preview'></div>"
+        )
 
     def relative_path(self, path):
         for parent_path in self.page.allowed_directories_for_previews():
@@ -103,14 +102,17 @@ class UserMetadataEditor:
             shorthash = item.get("shorthash", None)
 
             stats = os.stat(filename)
-            params = [
+            return [
                 ('Filename: ', self.relative_path(filename)),
                 ('File size: ', sysinfo.pretty_bytes(stats.st_size)),
                 ('Hash: ', shorthash),
-                ('Modified: ', datetime.datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M')),
+                (
+                    'Modified: ',
+                    datetime.datetime.fromtimestamp(stats.st_mtime).strftime(
+                        '%Y-%m-%d %H:%M'
+                    ),
+                ),
             ]
-
-            return params
         except Exception as e:
             errors.display(e, f"reading info for {name}")
             return []
@@ -133,7 +135,7 @@ class UserMetadataEditor:
         filename = item.get("filename", None)
         basename, ext = os.path.splitext(filename)
 
-        metadata_path = basename + '.json'
+        metadata_path = f'{basename}.json'
         with open(metadata_path, "w", encoding="utf8") as file:
             json.dump(metadata, file, indent=4, ensure_ascii=False)
         self.page.lister.update_file_entry(metadata_path)
@@ -179,10 +181,10 @@ class UserMetadataEditor:
         item = self.page.items.get(name, {})
 
         index = int(index)
-        index = 0 if index < 0 else index
+        index = max(index, 0)
         index = len(gallery) - 1 if index >= len(gallery) else index
 
-        img_info = gallery[index if index >= 0 else 0]
+        img_info = gallery[max(index, 0)]
         image = infotext_utils.image_from_url_text(img_info)
         geninfo, items = images.read_info_from_image(image)
 
@@ -194,12 +196,16 @@ class UserMetadataEditor:
     def setup_ui(self, gallery):
         self.button_replace_preview.click(
             fn=self.save_preview,
-            _js=f"function(x, y, z){{return [selected_gallery_index_id('{self.tabname + '_gallery_container'}'), y, z]}}",
+            _js=f"function(x, y, z){{return [selected_gallery_index_id('{self.tabname}_gallery_container'), y, z]}}",
             inputs=[self.edit_name_input, gallery, self.edit_name_input],
-            outputs=[self.html_preview, self.html_status]
+            outputs=[self.html_preview, self.html_status],
         ).then(
             fn=None,
-            _js="function(name){extraNetworksRefreshSingleCard(" + json.dumps(self.page.name) + "," + json.dumps(self.tabname) + ", name);}",
+            _js="function(name){extraNetworksRefreshSingleCard("
+            + json.dumps(self.page.name)
+            + ","
+            + json.dumps(self.tabname)
+            + ", name);}",
             inputs=[self.edit_name_input],
-            outputs=[]
+            outputs=[],
         )
