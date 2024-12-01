@@ -25,14 +25,11 @@ class Condition:
         return self._copy_with(repeat_to_batch_size(self.cond, batch_size).to(device))
 
     def can_concat(self, other):
-        if self.cond.shape != other.cond.shape:
-            return False
-        return True
+        return self.cond.shape == other.cond.shape
 
     def concat(self, others):
         conds = [self.cond]
-        for x in others:
-            conds.append(x.cond)
+        conds.extend(x.cond for x in others)
         return torch.cat(conds)
 
 
@@ -80,9 +77,7 @@ class ConditionConstant(Condition):
         return self._copy_with(self.cond)
 
     def can_concat(self, other):
-        if self.cond != other.cond:
-            return False
-        return True
+        return self.cond == other.cond
 
     def concat(self, others):
         return self.cond
