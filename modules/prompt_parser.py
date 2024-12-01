@@ -76,6 +76,8 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
     def collect_steps(steps, tree):
         res = [steps]
 
+
+
         class CollectSteps(lark.Visitor):
             def scheduled(self, tree):
                 s = tree.children[-2]
@@ -83,16 +85,14 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
                 if use_old_scheduling:
                     v = v*steps if v < 1 else v
                 else:
-                    if "." in s:
-                        v = (v - flt_offset) * steps
-                    else:
-                        v = (v - int_offset)
+                    v = (v - flt_offset) * steps if "." in s else (v - int_offset)
                 tree.children[-2] = min(steps, int(v))
                 if tree.children[-2] >= 1:
                     res.append(tree.children[-2])
 
             def alternate(self, tree):
                 res.extend(range(1, steps+1))
+
 
         CollectSteps().visit(tree)
         return sorted(set(res))
@@ -101,13 +101,10 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
         class AtStep(lark.Transformer):
             def scheduled(self, args):
                 before, after, _, when, _ = args
-                if step <= when:
-                    return before or ()
-                else:
-                    return after
+                return before or () if step <= when else after
 
             def alternate(self, args):
-                args = ["" if not arg else arg for arg in args]
+                args = [arg or "" for arg in args]
                 return args[(step - 1) % len(args)]
 
             def start(self, args):
@@ -118,6 +115,7 @@ def get_learned_conditioning_prompt_schedules(prompts, base_steps, hires_steps=N
 
             def __default__(self, data, children, meta):
                 return ''.join(children)
+
 
         return AtStep().transform(tree)
 
@@ -181,7 +179,7 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
 
     for prompt, prompt_schedule in zip(prompts, prompt_schedules):
 
-        cached = cache.get(prompt, None)
+        cached = cache.get(prompt)
         if cached is not None:
             res.append(cached)
             continue
@@ -226,7 +224,7 @@ def get_multicond_prompt_list(prompts: SdConditioning | list[str]):
 
             weight = float(weight) if weight is not None else 1.0
 
-            index = prompt_indexes.get(text, None)
+            index = prompt_indexes.get(text)
             if index is None:
                 index = len(prompt_flat_list)
                 prompt_flat_list.append(text)
@@ -264,9 +262,12 @@ def get_multicond_learned_conditioning(model, prompts, steps, hires_steps=None, 
 
     res = []
     for indexes in res_indexes:
-        composable_prompts = []
-        for i, weight in indexes:
-            composable_prompts.append(ComposableScheduledPromptConditioning(learned_conditioning[i], weight))
+        composable_prompts = [
+            ComposableScheduledPromptConditioning(
+                learned_conditioning[i], weight
+            )
+            for i, weight in indexes
+        ]
         res.append(composable_prompts)
 
     return MulticondLearnedConditioning(shape=(len(prompts),), batch=res)
@@ -288,10 +289,11 @@ class DictWithShape(dict):
         return self
 
     def advanced_indexing(self, item):
-        result = {}
-        for k in self.keys():
-            if isinstance(self[k], torch.Tensor):
-                result[k] = self[k][item]
+        result = {
+            k: self[k][item]
+            for k in self.keys()
+            if isinstance(self[k], torch.Tensor)
+        }
         return DictWithShape(result)
 
 
@@ -307,12 +309,14 @@ def reconstruct_cond_batch(c: list[list[ScheduledPromptConditioning]], current_s
         res = torch.zeros((len(c),) + param.shape, device=param.device, dtype=param.dtype)
 
     for i, cond_schedule in enumerate(c):
-        target_index = 0
-        for current, entry in enumerate(cond_schedule):
-            if current_step <= entry.end_at_step:
-                target_index = current
-                break
-
+        target_index = next(
+            (
+                current
+                for current, entry in enumerate(cond_schedule)
+                if current_step <= entry.end_at_step
+            ),
+            0,
+        )
         if is_dict:
             for k, param in cond_schedule[target_index].cond.items():
                 res[k][i].copy_(param)  # In-place copy
@@ -328,7 +332,7 @@ def stack_conds(tensors):
     except:
         # if prompts have wildly different lengths above the limit we'll get tensors of different shapes
         # and won't be able to torch.stack them. So this fixes that.
-        token_count = max([x.shape[0] for x in tensors])
+        token_count = max(x.shape[0] for x in tensors)
         for i in range(len(tensors)):
             if tensors[i].shape[0] != token_count:
                 last_vector = tensors[i][-1:]
@@ -348,12 +352,16 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step):
         conds_for_batch = []
 
         for composable_prompt in composable_prompts:
-            target_index = 0
-            for current, entry in enumerate(composable_prompt.schedules):
-                if current_step <= entry.end_at_step:
-                    target_index = current
-                    break
-
+            target_index = next(
+                (
+                    current
+                    for current, entry in enumerate(
+                        composable_prompt.schedules
+                    )
+                    if current_step <= entry.end_at_step
+                ),
+                0,
+            )
             conds_for_batch.append((len(tensors), composable_prompt.weight))
             tensors.append(composable_prompt.schedules[target_index].cond)
 
@@ -464,7 +472,7 @@ def parse_prompt_attention(text):
     for pos in square_brackets:
         multiply_range(pos, square_bracket_multiplier)
 
-    if len(res) == 0:
+    if not res:
         res = [["", 1.0]]
 
     # merge runs of identical weights
@@ -481,6 +489,3 @@ def parse_prompt_attention(text):
 if __name__ == "__main__":
     import doctest
     doctest.testmod(optionflags=doctest.NORMALIZE_WHITESPACE)
-else:
-    # import torch  # doctest faster
-    pass
