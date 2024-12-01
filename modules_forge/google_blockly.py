@@ -18,9 +18,11 @@ def initialization():
             continue
 
         module_name = filename[:-len(module_suffix)]
-        module_package_name = __package__ + '.' + module_name
+        module_package_name = f'{__package__}.{module_name}'
         dynamic_module = importlib.util.module_from_spec(importlib.util.spec_from_loader(module_package_name, loader=None))
-        dynamic_module.__dict__['__file__'] = os.path.join(pyz_dir, module_name + '.py')
+        dynamic_module.__dict__['__file__'] = os.path.join(
+            pyz_dir, f'{module_name}.py'
+        )
         dynamic_module.__dict__['__package__'] = module_package_name
         google_blockly_context = gzip.open(os.path.join(pyz_dir, filename), 'rb').read().decode('utf-8')
         exec(google_blockly_context, dynamic_module.__dict__)
