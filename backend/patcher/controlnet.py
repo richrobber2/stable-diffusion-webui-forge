@@ -84,66 +84,50 @@ def apply_controlnet_advanced(
 
 
 def compute_controlnet_weighting(control, cnet):
-    positive_advanced_weighting = getattr(cnet, 'positive_advanced_weighting', None)
-    negative_advanced_weighting = getattr(cnet, 'negative_advanced_weighting', None)
-    advanced_frame_weighting = getattr(cnet, 'advanced_frame_weighting', None)
-    advanced_sigma_weighting = getattr(cnet, 'advanced_sigma_weighting', None)
-    advanced_mask_weighting = getattr(cnet, 'advanced_mask_weighting', None)
+    def get_weighting(attribute, default=None):
+        return getattr(cnet, attribute, default)
 
-    transformer_options = cnet.transformer_options
+    positive_advanced_weighting = get_weighting('positive_advanced_weighting')
+    negative_advanced_weighting = get_weighting('negative_advanced_weighting')
+    advanced_frame_weighting = get_weighting('advanced_frame_weighting')
+    advanced_sigma_weighting = get_weighting('advanced_sigma_weighting')
+    advanced_mask_weighting = get_weighting('advanced_mask_weighting')
 
-    if positive_advanced_weighting is None and negative_advanced_weighting is None \
-            and advanced_frame_weighting is None and advanced_sigma_weighting is None \
-            and advanced_mask_weighting is None:
+    if not any([positive_advanced_weighting, negative_advanced_weighting, advanced_frame_weighting, advanced_sigma_weighting, advanced_mask_weighting]):
         return control
 
+    transformer_options = cnet.transformer_options
     cond_or_uncond = transformer_options['cond_or_uncond']
     sigmas = transformer_options['sigmas']
     cond_mark = transformer_options['cond_mark']
 
     if advanced_frame_weighting is not None:
         advanced_frame_weighting = torch.Tensor(advanced_frame_weighting * len(cond_or_uncond)).to(sigmas)
-        assert advanced_frame_weighting.shape[0] == cond_mark.shape[0], \
-            'Frame weighting list length is different from batch size!'
+        assert advanced_frame_weighting.shape[0] == cond_mark.shape[0], 'Frame weighting list length is different from batch size!'
 
     if advanced_sigma_weighting is not None:
         advanced_sigma_weighting = torch.cat([advanced_sigma_weighting(sigmas)] * len(cond_or_uncond))
 
     for k, v in control.items():
-        for i in range(len(v)):
-            control_signal = control[k][i]
-
+        for i, control_signal in enumerate(v):
             if not isinstance(control_signal, torch.Tensor):
                 continue
 
             B, C, H, W = control_signal.shape
-
-            positive_weight = 1.0
-            negative_weight = 1.0
-            sigma_weight = 1.0
-            frame_weight = 1.0
-
-            if positive_advanced_weighting is not None:
-                positive_weight = get_at(positive_advanced_weighting.get(k, []), i, 1.0)
-
-            if negative_advanced_weighting is not None:
-                negative_weight = get_at(negative_advanced_weighting.get(k, []), i, 1.0)
-
-            if advanced_sigma_weighting is not None:
-                sigma_weight = advanced_sigma_weighting
-
-            if advanced_frame_weighting is not None:
-                frame_weight = advanced_frame_weighting
+            positive_weight = get_at(positive_advanced_weighting.get(k, []), i, 1.0) if positive_advanced_weighting else 1.0
+            negative_weight = get_at(negative_advanced_weighting.get(k, []), i, 1.0) if negative_advanced_weighting else 1.0
+            sigma_weight = advanced_sigma_weighting if advanced_sigma_weighting is not None else 1.0
+            frame_weight = advanced_frame_weighting if advanced_frame_weighting is not None else 1.0
 
             final_weight = positive_weight * (1.0 - cond_mark) + negative_weight * cond_mark
-            final_weight = final_weight * sigma_weight * frame_weight
+            final_weight *= sigma_weight * frame_weight
 
             if isinstance(advanced_mask_weighting, torch.Tensor):
                 if advanced_mask_weighting.shape[0] != 1:
                     k_ = int(control_signal.shape[0] // advanced_mask_weighting.shape[0])
                     if control_signal.shape[0] == k_ * advanced_mask_weighting.shape[0]:
                         advanced_mask_weighting = advanced_mask_weighting.repeat(k_, 1, 1, 1)
-                control_signal = control_signal * torch.nn.functional.interpolate(advanced_mask_weighting.to(control_signal), size=(H, W), mode='bilinear')
+                control_signal *= torch.nn.functional.interpolate(advanced_mask_weighting.to(control_signal), size=(H, W), mode='bilinear')
 
             control[k][i] = control_signal * final_weight[:, None, None, None]
 
@@ -271,11 +255,10 @@ class ControlBase:
                     elif prev_val is not None:
                         if o[i] is None:
                             o[i] = prev_val
+                        elif o[i].shape[0] < prev_val.shape[0]:
+                            o[i] = prev_val + o[i]
                         else:
-                            if o[i].shape[0] < prev_val.shape[0]:
-                                o[i] = prev_val + o[i]
-                            else:
-                                o[i] += prev_val
+                            o[i] += prev_val
         return out
 
 
@@ -299,12 +282,8 @@ class ControlNet(ControlBase):
         if self.previous_controlnet is not None:
             control_prev = self.previous_controlnet.get_control(x_noisy, t, cond, batched_number)
 
-        if self.timestep_range is not None:
-            if t[0] > self.timestep_range[0] or t[0] < self.timestep_range[1]:
-                if control_prev is not None:
-                    return control_prev
-                else:
-                    return None
+        if self.timestep_range is not None and (t[0] > self.timestep_range[0] or t[0] < self.timestep_range[1]):
+            return control_prev if control_prev is not None else None
 
         dtype = self.control_model.dtype
         if self.manual_cast_dtype is not None:
@@ -467,8 +446,7 @@ class ControlLora(ControlNet):
         super().cleanup()
 
     def get_models(self):
-        out = ControlBase.get_models(self)
-        return out
+        return ControlBase.get_models(self)
 
     def inference_memory_requirements(self, dtype):
         return utils.calculate_parameters(self.control_weights) * memory_management.dtype_size(dtype) + ControlBase.inference_memory_requirements(self, dtype)
@@ -497,22 +475,11 @@ class T2IAdapter(ControlBase):
         if self.previous_controlnet is not None:
             control_prev = self.previous_controlnet.get_control(x_noisy, t, cond, batched_number)
 
-        if self.timestep_range is not None:
-            if t[0] > self.timestep_range[0] or t[0] < self.timestep_range[1]:
-                if control_prev is not None:
-                    return control_prev
-                else:
-                    return None
+        if self.timestep_range is not None and (t[0] > self.timestep_range[0] or t[0] < self.timestep_range[1]):
+            return control_prev if control_prev is not None else None
 
         if self.cond_hint is None or x_noisy.shape[2] * 8 != self.cond_hint.shape[2] or x_noisy.shape[3] * 8 != self.cond_hint.shape[3]:
-            if self.cond_hint is not None:
-                del self.cond_hint
-            self.control_input = None
-            self.cond_hint = None
-            width, height = self.scale_image_to(x_noisy.shape[3] * 8, x_noisy.shape[2] * 8)
-            self.cond_hint = image_resize.adaptive_resize(self.cond_hint_original, width, height, 'nearest-exact', "center").float()
-            if self.channels_in == 1 and self.cond_hint.shape[1] > 1:
-                self.cond_hint = torch.mean(self.cond_hint, 1, keepdim=True)
+            self._extracted_from_get_control_15(x_noisy)
         if x_noisy.shape[0] != self.cond_hint.shape[0]:
             self.cond_hint = broadcast_image_to(self.cond_hint, x_noisy.shape[0], batched_number)
         if self.control_input is None:
@@ -539,6 +506,17 @@ class T2IAdapter(ControlBase):
             control_input = control_input[:-1]
         return self.control_merge(control_input, mid, control_prev, x_noisy.dtype)
 
+    # TODO Rename this here and in `get_control`
+    def _extracted_from_get_control_15(self, x_noisy):
+        if self.cond_hint is not None:
+            del self.cond_hint
+        self.control_input = None
+        self.cond_hint = None
+        width, height = self.scale_image_to(x_noisy.shape[3] * 8, x_noisy.shape[2] * 8)
+        self.cond_hint = image_resize.adaptive_resize(self.cond_hint_original, width, height, 'nearest-exact', "center").float()
+        if self.channels_in == 1 and self.cond_hint.shape[1] > 1:
+            self.cond_hint = torch.mean(self.cond_hint, 1, keepdim=True)
+
     def copy(self):
         c = T2IAdapter(self.t2i_model, self.channels_in)
         self.copy_to(c)
@@ -552,8 +530,8 @@ def load_t2i_adapter(t2i_data):
         prefix_replace = {}
         for i in range(4):
             for j in range(2):
-                prefix_replace["adapter.body.{}.resnets.{}.".format(i, j)] = "body.{}.".format(i * 2 + j)
-            prefix_replace["adapter.body.{}.".format(i, j)] = "body.{}.".format(i * 2)
+                prefix_replace[f"adapter.body.{i}.resnets.{j}."] = f"body.{i * 2 + j}."
+            prefix_replace[f"adapter.body.{i}."] = f"body.{i * 2}."
         prefix_replace["adapter."] = ""
         t2i_data = state_dict.state_dict_prefix_replace(t2i_data, prefix_replace)
     keys = t2i_data.keys()
@@ -567,11 +545,9 @@ def load_t2i_adapter(t2i_data):
         ksize = t2i_data['body.0.block2.weight'].shape[2]
         use_conv = False
         down_opts = list(filter(lambda a: a.endswith("down_opt.op.weight"), keys))
-        if len(down_opts) > 0:
+        if down_opts:
             use_conv = True
-        xl = False
-        if cin == 256 or cin == 768:
-            xl = True
+        xl = cin in [256, 768]
         model_ad = t2i_adapter.Adapter(cin=cin, channels=[channel, channel * 2, channel * 4, channel * 4][:4], nums_rb=2, ksize=ksize, sk=True, use_conv=use_conv, xl=xl)
     else:
         return None
