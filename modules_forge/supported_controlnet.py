@@ -71,10 +71,10 @@ class ControlNetPatcher(ControlModelPatcher):
                     if count == 0:
                         k_in = f"controlnet_cond_embedding.conv_in{s}"
                     else:
-                        k_in = "controlnet_cond_embedding.blocks.{}{}".format(count - 1, s)
-                    k_out = "input_hint_block.{}{}".format(count * 2, s)
+                        k_in = f"controlnet_cond_embedding.blocks.{count - 1}{s}"
+                    k_out = f"input_hint_block.{count * 2}{s}"
                     if k_in not in controlnet_data:
-                        k_in = "controlnet_cond_embedding.conv_out{}".format(s)
+                        k_in = f"controlnet_cond_embedding.conv_out{s}"
                         loop = False
                     diffusers_keys[k_in] = k_out
                 count += 1
@@ -100,10 +100,7 @@ class ControlNetPatcher(ControlModelPatcher):
             prefix = ""
         else:
             net = load_t2i_adapter(controlnet_data)
-            if net is None:
-                return None
-            return ControlNetPatcher(net)
-
+            return None if net is None else ControlNetPatcher(net)
         if controlnet_config is None:
             unet_dtype = memory_management.unet_dtype()
             controlnet_config = model_config_from_unet(controlnet_data, prefix, True).unet_config
@@ -113,7 +110,9 @@ class ControlNetPatcher(ControlModelPatcher):
         computation_dtype = memory_management.get_computation_dtype(load_device)
 
         controlnet_config.pop("out_channels")
-        controlnet_config["hint_channels"] = controlnet_data["{}input_hint_block.0.weight".format(prefix)].shape[1]
+        controlnet_config["hint_channels"] = controlnet_data[
+            f"{prefix}input_hint_block.0.weight"
+        ].shape[1]
 
         with using_forge_operations(dtype=unet_dtype, manual_cast_enabled=computation_dtype != unet_dtype):
             control_model = cldm.ControlNet(**controlnet_config).to(dtype=unet_dtype)
