@@ -23,12 +23,11 @@ samplers_hidden = {}
 
 
 def find_sampler_config(name):
-    if name is not None:
-        config = all_samplers_map.get(name, None)
-    else:
-        config = all_samplers[0]
-
-    return config
+    return (
+        all_samplers_map.get(name)
+        if name is not None
+        else all_samplers[0]
+    )
 
 
 def create_sampler(name, model):
@@ -37,7 +36,7 @@ def create_sampler(name, model):
     assert config is not None, f'bad sampler name: {name}'
 
     if model.is_sdxl and config.options.get("no_sdxl", False):
-        raise Exception(f"Sampler {config.name} is not supported for SDXL")
+        raise ValueError(f"Sampler {config.name} is not supported for SDXL")
 
     sampler = config.constructor(model)
     sampler.config = config
@@ -119,9 +118,9 @@ def get_sampler_and_scheduler(sampler_name, scheduler_name, *, convert_automatic
         name_options = [scheduler.label, scheduler.name, *(scheduler.aliases or [])]
 
         for name_option in name_options:
-            if name.endswith(" " + name_option):
+            if name.endswith(f" {name_option}"):
                 found_scheduler = scheduler
-                name = name[0:-(len(name_option) + 1)]
+                name = name[:-(len(name_option) + 1)]
                 break
 
     sampler = all_samplers_map.get(name, default_sampler)
