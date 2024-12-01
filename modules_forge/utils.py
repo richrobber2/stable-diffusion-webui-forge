@@ -40,7 +40,9 @@ def apply_circular_forge(model, tiling_enabled=False):
     # for layer in [layer for layer in layers if 'Conv' in type(layer).__name__]:
     #     layer.padding_mode = 'circular' if tiling_enabled else 'zeros'
 
-    print(f'Tiling is currently under maintenance and unavailable. Sorry for the inconvenience.')
+    print(
+        'Tiling is currently under maintenance and unavailable. Sorry for the inconvenience.'
+    )
 
     return
 
@@ -51,7 +53,7 @@ def HWC3(x):
         x = x[:, :, None]
     assert x.ndim == 3
     H, W, C = x.shape
-    assert C == 1 or C == 3 or C == 4
+    assert C in [1, 3, 4]
     if C == 3:
         return x
     if C == 1:
@@ -67,8 +69,7 @@ def HWC3(x):
 def generate_random_filename(extension=".txt"):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-    filename = f"{timestamp}-{random_string}{extension}"
-    return filename
+    return f"{timestamp}-{random_string}{extension}"
 
 
 @torch.no_grad()
