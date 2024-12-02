@@ -36,6 +36,60 @@ class GradioTextAreaBind {
     }
 }
 
+// Add this class before ForgeCanvas class definition
+class UndoManager {
+    constructor(maxStates = 20) {
+        this.states = [];
+        this.currentIndex = -1;
+        this.maxStates = maxStates;
+    }
+
+    pushState(state) {
+        // Remove any future states if we're in the middle of the history
+        if (this.currentIndex < this.states.length - 1) {
+            this.states = this.states.slice(0, this.currentIndex + 1);
+        }
+
+        // Remove oldest state if we're at capacity
+        if (this.states.length >= this.maxStates) {
+            this.states.shift();
+            this.currentIndex--;
+        }
+
+        this.states.push(state);
+        this.currentIndex++;
+    }
+
+    canUndo() {
+        return this.currentIndex > 0;
+    }
+
+    canRedo() {
+        return this.currentIndex < this.states.length - 1;
+    }
+
+    undo() {
+        if (!this.canUndo()) return null;
+        this.currentIndex--;
+        return this.states[this.currentIndex];
+    }
+
+    redo() {
+        if (!this.canRedo()) return null;
+        this.currentIndex++;
+        return this.states[this.currentIndex];
+    }
+
+    clear() {
+        this.states = [];
+        this.currentIndex = -1;
+    }
+
+    getCurrentState() {
+        return this.states[this.currentIndex];
+    }
+}
+
 // Main Canvas Class
 class ForgeCanvas {
     constructor(
@@ -92,7 +146,35 @@ class ForgeCanvas {
         this.currentMode = 'normal';
         this.currentTool = 'brush';
         this.eraseChanged = false;
+        this.toolbarDragging = false;
+        this.toolbarOffset = { x: 0, y: 0 };
+        this.undoManager = new UndoManager(20); // Limit to 20 states
         this.start();
+
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (!this.pointerInsideContainer) return;
+            
+            if (e.key === 'b') this.setTool('brush');
+            if (e.key === 'e') this.setTool('eraser');
+            if (e.key === '[') this.adjustBrushSize(-1);
+            if (e.key === ']') this.adjustBrushSize(1);
+        });
+
+        // Enhanced tooltips
+        const tooltips = {
+            uploadButton: 'Upload Image (or drag & drop)',
+            resetButton: 'Reset Canvas (R)',
+            undoButton: 'Undo (Ctrl+Z)', 
+            redoButton: 'Redo (Ctrl+Y)',
+            eraserButton: 'Eraser Tool (E)',
+            scribbleWidth: 'Brush Size ([ and ])',
+        };
+
+        Object.entries(tooltips).forEach(([id, tooltip]) => {
+            const elem = document.getElementById(`${id}_${this.uuid}`);
+            if (elem) elem.title = tooltip;
+        });
     }
 
     start() {
@@ -475,10 +557,43 @@ class ForgeCanvas {
         });
 
         drawingCanvas.setAttribute('tabindex', '0');
+
+        const toolbarHandle = document.getElementById(`toolbarHandle_${this.uuid}`);
+        toolbarHandle.addEventListener('mousedown', (e) => {
+            self.toolbarDragging = true;
+            const toolbarRect = toolbar.getBoundingClientRect();
+            self.toolbarOffset = {
+                x: e.clientX - toolbarRect.left,
+                y: e.clientY - toolbarRect.top
+            };
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!self.toolbarDragging) return;
+
+            const containerRect = imageContainer.getBoundingClientRect();
+            const toolbarRect = toolbar.getBoundingClientRect();
+
+            let newX = e.clientX - containerRect.left - self.toolbarOffset.x;
+            let newY = e.clientY - containerRect.top - self.toolbarOffset.y;
+
+            // Keep toolbar within container bounds
+            newX = Math.max(0, Math.min(newX, containerRect.width - toolbarRect.width));
+            newY = Math.max(0, Math.min(newY, containerRect.height - toolbarRect.height));
+
+            toolbar.style.left = `${newX}px`;
+            toolbar.style.top = `${newY}px`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            self.toolbarDragging = false;
+        });
     }
 
     handleFileUpload(file) {
         if (file && !this.noUpload) {
+            this.clearHistory();
             const reader = new FileReader();
             reader.onload = event => this.uploadBase64(event.target.result);
             reader.readAsDataURL(file);
@@ -616,6 +731,7 @@ class ForgeCanvas {
         }
 
         this.onImageUpload();
+        this.clearHistory();
     }
 
     isInsideImage(x, y) {
@@ -636,6 +752,12 @@ class ForgeCanvas {
         const y = (event.clientY - rect.top) / this.imgScale;
 
         this.tempDrawPoints.push([x, y]);
+        
+        if (this.tempDrawPoints.length === 1) {
+            // Save state when starting a new stroke
+            this.saveState();
+        }
+        
         context.putImageData(this.tempDrawBackground, 0, 0);
         context.beginPath();
         context.moveTo(this.tempDrawPoints[0][0], this.tempDrawPoints[0][1]);
@@ -685,6 +807,11 @@ class ForgeCanvas {
     }
 
     handleErase(event) {
+        if (!this.lastErasePoint) {
+            // Save state when starting a new erase operation
+            this.saveState();
+        }
+        
         const context = this.drawingCanvas.getContext('2d');
         const rect = this.drawingCanvas.getBoundingClientRect();
         const x = (event.clientX - rect.left) / this.imgScale;
@@ -749,38 +876,37 @@ class ForgeCanvas {
 
     saveState() {
         const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
-        const context = drawingCanvas.getContext('2d');
-        const imageData = context.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+        
+        // Create efficient state object
+        const state = {
+            timestamp: Date.now(),
+            imageData: drawingCanvas.getContext('2d').getImageData(
+                0, 0, 
+                drawingCanvas.width, 
+                drawingCanvas.height
+            )
+        };
 
-        this.history = this.history.slice(0, this.historyIndex + 1);
-        this.history.push(imageData);
-        this.historyIndex++;
+        this.undoManager.pushState(state);
         this.updateUndoRedoButtons();
         this.onDrawingCanvasUpload();
     }
 
-    restoreState() {
-        const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
-        const context = drawingCanvas.getContext('2d');
-        const imageData = this.history[this.historyIndex];
-
-        context.putImageData(imageData, 0, 0);
-        this.onDrawingCanvasUpload();
-    }
-
     undo() {
-        if (this.historyIndex > 0) {
-            this.historyIndex--;
-            this.restoreState();
+        const state = this.undoManager.undo();
+        if (state) {
+            this.applyState(state);
             this.updateUndoRedoButtons();
+            this.onDrawingCanvasUpload();
         }
     }
 
     redo() {
-        if (this.historyIndex < this.history.length - 1) {
-            this.historyIndex++;
-            this.restoreState();
+        const state = this.undoManager.redo();
+        if (state) {
+            this.applyState(state);
             this.updateUndoRedoButtons();
+            this.onDrawingCanvasUpload();
         }
     }
 
@@ -788,11 +914,22 @@ class ForgeCanvas {
         const undoButton = document.getElementById(`undoButton_${this.uuid}`);
         const redoButton = document.getElementById(`redoButton_${this.uuid}`);
 
-        undoButton.disabled = this.historyIndex <= 0;
-        redoButton.disabled = this.historyIndex >= this.history.length - 1;
+        undoButton.disabled = !this.undoManager.canUndo();
+        redoButton.disabled = !this.undoManager.canRedo();
 
         undoButton.style.opacity = undoButton.disabled ? '0.5' : '1';
         redoButton.style.opacity = redoButton.disabled ? '0.5' : '1';
+    }
+
+    applyState(state) {
+        const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
+        const context = drawingCanvas.getContext('2d');
+        context.putImageData(state.imageData, 0, 0);
+    }
+
+    clearHistory() {
+        this.undoManager.clear();
+        this.updateUndoRedoButtons();
     }
 
     onImageUpload() {
@@ -874,6 +1011,24 @@ class ForgeCanvas {
         maxButton.style.display = 'inline-block';
         minButton.style.display = 'none';
         this.maximized = false;
+    }
+
+    setTool(tool) {
+        if (tool === this.currentTool) return;
+        this.currentTool = tool;
+        const eraserButton = document.getElementById(`eraserButton_${this.uuid}`);
+        eraserButton.classList.toggle('active', tool === 'eraser');
+    }
+
+    adjustBrushSize(delta) {
+        const width = Math.max(1, Math.min(20, this.scribbleWidth + delta));
+        this.scribbleWidth = width;
+        const input = document.getElementById(`scribbleWidth_${this.uuid}`);
+        input.value = width;
+        const size = width * 20;
+        const indicator = document.getElementById(`scribbleIndicator_${this.uuid}`);
+        indicator.style.width = `${size}px`;
+        indicator.style.height = `${size}px`;
     }
 }
 

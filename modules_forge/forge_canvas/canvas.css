@@ -50,13 +50,17 @@
 
 .forge-toolbar {
     position: absolute;
-    top: 0px;
-    left: 0px;
+    top: 10px;
+    left: 10px;
     z-index: 10;
     background: rgba(47, 47, 47, 0.8);
     padding: 6px 10px;
     opacity: 0;
     transition: opacity 0.3s ease;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    backdrop-filter: blur(8px);
+    cursor: default;
 }
 
 .forge-toolbar .forge-btn {
@@ -67,14 +71,22 @@
     font-size: 14px;
     cursor: pointer;
     transition: background-color 0.3s ease;
+    border-radius: 4px;
+    transition: all 0.2s ease;
 }
 
 .forge-toolbar .forge-btn:hover {
     background-color: #5e5e5e;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 
 .forge-toolbar .forge-btn:active {
     background-color: #3e3e3e;
+}
+
+.forge-toolbar .forge-btn.active {
+    background-color: #2d7cee;
 }
 
 .forge-toolbar-box-a {
@@ -133,6 +145,24 @@
 }
 
 .forge-toolbar-range {
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #4a4a4a;
+}
+
+.forge-toolbar-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #2d7cee;
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+
+.forge-toolbar-range::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
 }
 
 .forge-scribble-indicator {
@@ -143,6 +173,8 @@
     display: none;
     width: 80px;
     height: 80px;
+    transition: width 0.2s, height 0.2s;
+    mix-blend-mode: difference;
 }
 
 .forge-no-select {
@@ -156,4 +188,21 @@
     width: 30%;
     height: 30%;
     transform: translate(-50%, -50%);
+}
+
+.forge-toolbar-handle {
+    cursor: move;
+    padding: 2px 8px;
+    margin: -6px -10px 4px -10px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 8px 8px 0 0;
+    text-align: center;
+    color: #888;
+    font-size: 12px;
+    user-select: none;
+}
+
+.forge-toolbar-handle:hover {
+    background: rgba(0,0,0,0.3);
+    color: #aaa;
 }
