@@ -1,24 +1,24 @@
 // Utility Classes
 class GradioTextAreaBind {
-    /**
-     * Initializes a binding between a textarea and Gradio.
-     * @param {string} elementId - The ID of the target element.
-     * @param {string} className - The class name of the target element.
-     */
     constructor(elementId, className) {
         this.target = document.querySelector(`#${elementId}.${className} textarea`);
         this.syncLock = false;
         this.previousValue = '';
+        this.observer = new MutationObserver(() => {
+            if (this.target.value !== this.previousValue) {
+                this.previousValue = this.target.value;
+                if (!this.syncLock) {
+                    this.syncLock = true;
+                    callback(this.target.value);
+                    this.syncLock = false;
+                }
+            }
+        });
+        this.observer.observe(this.target, { characterData: true, subtree: true });
     }
 
-    /**
-     * Sets the value of the textarea and dispatches an input event.
-     * @param {string} newValue - The new value to set.
-     */
     setValue(newValue) {
-        if (this.syncLock) {
-          return;
-        }
+        if (this.syncLock) return;
 
         this.syncLock = true;
         this.target.value = newValue;
@@ -31,45 +31,13 @@ class GradioTextAreaBind {
         this.syncLock = false;
     }
 
-    /**
-     * Listens for changes in the textarea and triggers a callback.
-     * @param {Function} callback - The function to call on value change.
-     */
     listen(callback) {
-        setInterval(() => {
-            if (this.target.value !== this.previousValue) {
-                this.previousValue = this.target.value;
-
-                if (this.syncLock) {
-                  return;
-                }
-
-                this.syncLock = true;
-                callback(this.target.value);
-                this.syncLock = false;
-            }
-        }, 100); // Checks every 100ms
+        // No need for setInterval, handled by MutationObserver
     }
 }
 
 // Main Canvas Class
 class ForgeCanvas {
-    /**
-     * Initializes the ForgeCanvas with various configurations.
-     * @param {string} uuid - Unique identifier for the canvas.
-     * @param {boolean} noUpload - Disable upload functionality.
-     * @param {boolean} noScribbles - Disable scribble functionality.
-     * @param {boolean} mask - Enable mask functionality.
-     * @param {number} initialHeight - Initial height of the canvas.
-     * @param {string} scribbleColor - Default scribble color.
-     * @param {boolean} scribbleColorFixed - Fix the scribble color.
-     * @param {number} scribbleWidth - Width of the scribble.
-     * @param {boolean} scribbleWidthFixed - Fix the scribble width.
-     * @param {number} scribbleAlpha - Transparency of the scribble.
-     * @param {boolean} scribbleAlphaFixed - Fix the scribble transparency.
-     * @param {number} scribbleSoftness - Softness of the scribble.
-     * @param {boolean} scribbleSoftnessFixed - Fix the scribble softness.
-     */
     constructor(
         uuid,
         noUpload = false,
@@ -85,7 +53,7 @@ class ForgeCanvas {
         scribbleSoftness = 0,
         scribbleSoftnessFixed = false
     ) {
-        this.gradioConfig = typeof gradio_config !== 'undefined' ? gradio_config : null; // Ensure gradio_config is defined
+        this.gradioConfig = typeof gradio_config !== 'undefined' ? gradio_config : null;
         this.uuid = uuid;
         this.noUpload = noUpload;
         this.noScribbles = noScribbles;
@@ -120,59 +88,46 @@ class ForgeCanvas {
         this.tempDrawBackground = null;
         this.backgroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_background');
         this.foregroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_foreground');
-        this.contrastPatternCanvas = null;  // Add this line
-        this.currentMode = 'normal';  // Add this line
+        this.contrastPatternCanvas = null;
+        this.currentMode = 'normal';
         this.currentTool = 'brush';
-        this.eraseChanged = false; // Add this line to track erase changes
+        this.eraseChanged = false;
         this.start();
     }
 
-    /**
-     * Initializes event listeners and sets up the canvas.
-     */
     start() {
         const self = this;
+        const elements = [
+            'imageContainer', 'image', 'resizeLine', 'container', 'toolbar', 'uploadButton',
+            'resetButton', 'centerButton', 'removeButton', 'undoButton', 'redoButton',
+            'drawingCanvas', 'maxButton', 'minButton', 'scribbleIndicator', 'uploadHint',
+            'scribbleColor', 'scribbleColorBlock', 'scribbleWidth', 'widthLabel',
+            'scribbleWidthBlock', 'scribbleAlpha', 'alphaLabel', 'scribbleAlphaBlock',
+            'scribbleSoftness', 'softnessLabel', 'scribbleSoftnessBlock', 'eraserButton'
+        ].reduce((acc, id) => {
+            acc[id] = document.getElementById(`${id}_${self.uuid}`);
+            return acc;
+        }, {});
 
-        // Get DOM elements
-        const imageContainer = document.getElementById(`imageContainer_${self.uuid}`);
-        const imageElement = document.getElementById(`image_${self.uuid}`);
-        const resizeLine = document.getElementById(`resizeLine_${self.uuid}`);
-        const container = document.getElementById(`container_${self.uuid}`);
-        const toolbar = document.getElementById(`toolbar_${self.uuid}`);
-        const uploadButton = document.getElementById(`uploadButton_${self.uuid}`);
-        const resetButton = document.getElementById(`resetButton_${self.uuid}`);
-        const centerButton = document.getElementById(`centerButton_${self.uuid}`);
-        const removeButton = document.getElementById(`removeButton_${self.uuid}`);
-        const undoButton = document.getElementById(`undoButton_${self.uuid}`);
-        const redoButton = document.getElementById(`redoButton_${self.uuid}`);
-        const drawingCanvas = document.getElementById(`drawingCanvas_${self.uuid}`);
-        const maxButton = document.getElementById(`maxButton_${self.uuid}`);
-        const minButton = document.getElementById(`minButton_${self.uuid}`);
-        const scribbleIndicator = document.getElementById(`scribbleIndicator_${self.uuid}`);
-        const uploadHint = document.getElementById(`uploadHint_${self.uuid}`);
-        const scribbleColorInput = document.getElementById(`scribbleColor_${self.uuid}`);
-        const scribbleColorBlock = document.getElementById(`scribbleColorBlock_${self.uuid}`);
-        const scribbleWidthInput = document.getElementById(`scribbleWidth_${self.uuid}`);
-        const widthLabel = document.getElementById(`widthLabel_${self.uuid}`);
-        const scribbleWidthBlock = document.getElementById(`scribbleWidthBlock_${self.uuid}`);
-        const scribbleAlphaInput = document.getElementById(`scribbleAlpha_${self.uuid}`);
-        const alphaLabel = document.getElementById(`alphaLabel_${self.uuid}`);
-        const scribbleAlphaBlock = document.getElementById(`scribbleAlphaBlock_${self.uuid}`);
-        const scribbleSoftnessInput = document.getElementById(`scribbleSoftness_${self.uuid}`);
-        const softnessLabel = document.getElementById(`softnessLabel_${self.uuid}`);
-        const scribbleSoftnessBlock = document.getElementById(`scribbleSoftnessBlock_${self.uuid}`);
-        const eraserButton = document.getElementById(`eraserButton_${self.uuid}`);
+        const {
+            imageContainer, image, resizeLine, container, toolbar, uploadButton,
+            resetButton, centerButton, removeButton, undoButton, redoButton,
+            drawingCanvas, maxButton, minButton, scribbleIndicator, uploadHint,
+            scribbleColor, scribbleColorBlock, scribbleWidth, widthLabel,
+            scribbleWidthBlock, scribbleAlpha, alphaLabel, scribbleAlphaBlock,
+            scribbleSoftness, softnessLabel, scribbleSoftnessBlock, eraserButton
+        } = elements;
 
-        // Initialize input values
-        scribbleColorInput.value = self.scribbleColor;
-        scribbleWidthInput.value = self.scribbleWidth;
-        scribbleAlphaInput.value = self.scribbleAlpha;
-        scribbleSoftnessInput.value = self.scribbleSoftness;
+        scribbleColor.value = self.scribbleColor;
+        scribbleWidth.value = self.scribbleWidth;
+        scribbleAlpha.value = self.scribbleAlpha;
+        scribbleSoftness.value = self.scribbleSoftness;
 
-        // Set initial styles
         const scribbleIndicatorSize = self.scribbleWidth * 20;
-        scribbleIndicator.style.width = `${scribbleIndicatorSize}px`;
-        scribbleIndicator.style.height = `${scribbleIndicatorSize}px`;
+        Object.assign(scribbleIndicator.style, {
+            width: `${scribbleIndicatorSize}px`,
+            height: `${scribbleIndicatorSize}px`
+        });
         container.style.height = `${self.initialHeight}px`;
         drawingCanvas.width = imageContainer.clientWidth;
         drawingCanvas.height = imageContainer.clientHeight;
@@ -180,18 +135,10 @@ class ForgeCanvas {
         const drawingContext = drawingCanvas.getContext('2d');
         self.drawingCanvas = drawingCanvas;
 
-        // Handle feature toggles
         if (self.noScribbles) {
-            resetButton.style.display = 'none';
-            undoButton.style.display = 'none';
-            redoButton.style.display = 'none';
-            scribbleColorInput.style.display = 'none';
-            scribbleColorBlock.style.display = 'none';
-            scribbleWidthBlock.style.display = 'none';
-            scribbleAlphaBlock.style.display = 'none';
-            scribbleSoftnessBlock.style.display = 'none';
-            scribbleIndicator.style.display = 'none';
-            drawingCanvas.style.display = 'none';
+            ['resetButton', 'undoButton', 'redoButton', 'scribbleColor', 'scribbleColorBlock',
+             'scribbleWidthBlock', 'scribbleAlphaBlock', 'scribbleSoftnessBlock', 'scribbleIndicator',
+             'drawingCanvas'].forEach(id => elements[id].style.display = 'none');
         }
 
         if (self.noUpload) {
@@ -200,13 +147,9 @@ class ForgeCanvas {
         }
 
         if (self.mask) {
-            scribbleColorBlock.style.display = 'none';
-            scribbleAlphaBlock.style.display = 'none';
-            scribbleSoftnessBlock.style.display = 'none';
+            ['scribbleColorBlock', 'scribbleAlphaBlock', 'scribbleSoftnessBlock'].forEach(id => elements[id].style.display = 'none');
 
-            // Create a mask pattern
-            const patternCanvas = document.createElement('canvas');  // Create a new canvas
-
+            const patternCanvas = document.createElement('canvas');
             patternCanvas.width = 20;
             patternCanvas.height = 20;
             const patternContext = patternCanvas.getContext('2d');
@@ -217,125 +160,78 @@ class ForgeCanvas {
             patternContext.fillRect(10, 0, 10, 10);
             patternContext.fillRect(0, 10, 10, 10);
             self.contrastPattern = drawingContext.createPattern(patternCanvas, 'repeat');
-            self.contrastPatternCanvas = patternCanvas;  // Store the canvas
+            self.contrastPatternCanvas = patternCanvas;
             drawingCanvas.style.opacity = '0.5';
-            self.currentMode = 'inpainting';  // Set current mode to 'inpainting'
+            self.currentMode = 'inpainting';
         }
 
-        // Adjust UI based on fixed scribble properties
         if (self.mask || (self.scribbleColorFixed && self.scribbleAlphaFixed && self.scribbleSoftnessFixed)) {
             scribbleSoftnessBlock.style.width = '100%';
-            scribbleWidthInput.style.width = '100%';
+            scribbleWidth.style.width = '100%';
             widthLabel.style.display = 'none';
         }
 
-        if (self.scribbleColorFixed) {
-            scribbleColorBlock.style.display = 'none';
-        }
+        if (self.scribbleColorFixed) scribbleColorBlock.style.display = 'none';
+        if (self.scribbleWidthFixed) scribbleWidthBlock.style.display = 'none';
+        if (self.scribbleAlphaFixed) scribbleAlphaBlock.style.display = 'none';
+        if (self.scribbleSoftnessFixed) scribbleSoftnessBlock.style.display = 'none';
 
-        if (self.scribbleWidthFixed) {
-            scribbleWidthBlock.style.display = 'none';
-        }
-
-        if (self.scribbleAlphaFixed) {
-            scribbleAlphaBlock.style.display = 'none';
-        }
-
-        if (self.scribbleSoftnessFixed) {
-            scribbleSoftnessBlock.style.display = 'none';
-        }
-
-        // Observe container resizing
         const resizeObserver = new ResizeObserver(() => {
             self.adjustInitialPositionAndScale();
             self.drawImage();
         });
         resizeObserver.observe(container);
 
-        // Handle file upload via input
         const imageInput = document.getElementById(`imageInput_${self.uuid}`);
-        imageInput.addEventListener('change', function (event) {
-            self.handleFileUpload(event.target.files[0]);
+        imageInput.addEventListener('change', event => self.handleFileUpload(event.target.files[0]));
+
+        uploadButton.addEventListener('click', () => {
+            if (!self.noUpload) imageInput.click();
         });
 
-        // Handle upload button click
-        uploadButton.addEventListener('click', function () {
-            if (self.noUpload) {
-              return;
-            }
-            imageInput.click();
-        });
-
-        // Handle reset button click
-        resetButton.addEventListener('click', function () {
-            self.resetImage();
-        });
-
-        // Handle center button click
-        centerButton.addEventListener('click', function () {
+        resetButton.addEventListener('click', () => self.resetImage());
+        centerButton.addEventListener('click', () => {
             self.adjustInitialPositionAndScale();
             self.drawImage();
         });
+        removeButton.addEventListener('click', () => self.removeImage());
+        undoButton.addEventListener('click', () => self.undo());
+        redoButton.addEventListener('click', () => self.redo());
 
-        // Handle remove button click
-        removeButton.addEventListener('click', function () {
-            self.removeImage();
-        });
-
-        // Handle undo and redo button clicks
-        undoButton.addEventListener('click', function () {
-            self.undo();
-        });
-
-        redoButton.addEventListener('click', function () {
-            self.redo();
-        });
-
-        // Handle scribble color change
-        scribbleColorInput.addEventListener('input', function () {
+        scribbleColor.addEventListener('input', function () {
             self.scribbleColor = this.value;
             scribbleIndicator.style.borderColor = self.scribbleColor;
         });
 
-        // Handle scribble width change
-        scribbleWidthInput.addEventListener('input', function () {
+        scribbleWidth.addEventListener('input', function () {
             self.scribbleWidth = this.value;
             const newSize = self.scribbleWidth * 20;
-            scribbleIndicator.style.width = `${newSize}px`;
-            scribbleIndicator.style.height = `${newSize}px`;
+            Object.assign(scribbleIndicator.style, {
+                width: `${newSize}px`,
+                height: `${newSize}px`
+            });
         });
 
-        // Handle scribble alpha change
-        scribbleAlphaInput.addEventListener('input', function () {
+        scribbleAlpha.addEventListener('input', function () {
             self.scribbleAlpha = this.value;
         });
 
-        // Handle scribble softness change
-        scribbleSoftnessInput.addEventListener('input', function () {
+        scribbleSoftness.addEventListener('input', function () {
             self.scribbleSoftness = this.value;
         });
 
-        // Handle eraser button click
         eraserButton.addEventListener('click', function () {
-            if (self.currentTool === 'eraser') {
-                self.currentTool = 'brush';
-                if (self.mask) {
-                    // Restore contrast pattern for brush in mask mode
-                    const context = self.drawingCanvas.getContext('2d');
-                    context.globalCompositeOperation = 'source-over';
-                    context.strokeStyle = self.contrastPattern;
-                }
-            } else {
-                self.currentTool = 'eraser';
+            self.currentTool = self.currentTool === 'eraser' ? 'brush' : 'eraser';
+            if (self.mask && self.currentTool === 'brush') {
+                const context = self.drawingCanvas.getContext('2d');
+                context.globalCompositeOperation = 'source-over';
+                context.strokeStyle = self.contrastPattern;
             }
             eraserButton.classList.toggle('active');
         });
 
-        // Drawing canvas events
         drawingCanvas.addEventListener('pointerdown', function (event) {
-            if (!self.img || event.button !== 0 || self.noScribbles) {
-              return;
-            }
+            if (!self.img || event.button !== 0 || self.noScribbles) return;
 
             const rect = drawingCanvas.getBoundingClientRect();
             self.drawing = true;
@@ -348,12 +244,11 @@ class ForgeCanvas {
                 ],
             ];
             self.tempDrawBackground = drawingContext.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
-            
+
             if (self.currentTool === 'eraser') {
                 self.handleErase(event);
             } else {
                 if (self.mask) {
-                    // Ensure contrast pattern is used for brush in mask mode
                     drawingContext.globalCompositeOperation = 'source-over';
                     drawingContext.strokeStyle = self.contrastPattern;
                 }
@@ -374,25 +269,26 @@ class ForgeCanvas {
                 drawingCanvas.style.cursor = 'crosshair';
             }
 
-            // Optional: Show scribble indicator
             if (self.img && !self.dragging && !self.noScribbles) {
                 const containerRect = imageContainer.getBoundingClientRect();
                 const indicatorOffset = self.scribbleWidth * 10;
-                scribbleIndicator.style.left = `${event.clientX - containerRect.left - indicatorOffset}px`;
-                scribbleIndicator.style.top = `${event.clientY - containerRect.top - indicatorOffset}px`;
-                scribbleIndicator.style.display = 'block';
+                Object.assign(scribbleIndicator.style, {
+                    left: `${event.clientX - containerRect.left - indicatorOffset}px`,
+                    top: `${event.clientY - containerRect.top - indicatorOffset}px`,
+                    display: 'block'
+                });
             }
         });
 
         drawingCanvas.addEventListener('pointerup', function () {
             if (self.drawing) {
                 self.drawing = false;
-                self.lastErasePoint = null;  // Reset last erase point
+                self.lastErasePoint = null;
                 drawingCanvas.style.cursor = '';
-                
-                if (self.eraseChanged) { // Check if erase changes occurred
+
+                if (self.eraseChanged) {
                     self.saveState();
-                    self.eraseChanged = false; // Reset the flag
+                    self.eraseChanged = false;
                 }
             }
         });
@@ -400,23 +296,19 @@ class ForgeCanvas {
         drawingCanvas.addEventListener('pointerleave', function () {
             if (self.drawing) {
                 self.drawing = false;
-                self.lastErasePoint = null;  // Reset last erase point
+                self.lastErasePoint = null;
                 drawingCanvas.style.cursor = '';
                 scribbleIndicator.style.display = 'none';
 
-                if (self.eraseChanged) { // Check if erase changes occurred
+                if (self.eraseChanged) {
                     self.saveState();
-                    self.eraseChanged = false; // Reset the flag
+                    self.eraseChanged = false;
                 }
             }
         });
 
-        // Prevent toolbar from triggering drag events
-        toolbar.addEventListener('pointerdown', function (event) {
-            event.stopPropagation();
-        });
+        toolbar.addEventListener('pointerdown', event => event.stopPropagation());
 
-        // Image container events for dragging and uploading
         imageContainer.addEventListener('pointerdown', function (event) {
             const rect = imageContainer.getBoundingClientRect();
             const offsetX = event.clientX - rect.left;
@@ -426,7 +318,7 @@ class ForgeCanvas {
                 self.dragging = true;
                 self.offsetX = offsetX - self.imgX;
                 self.offsetY = offsetY - self.imgY;
-                imageElement.style.cursor = 'grabbing';
+                image.style.cursor = 'grabbing';
                 drawingCanvas.style.cursor = 'grabbing';
                 scribbleIndicator.style.display = 'none';
             } else if (event.button === 0 && !self.img && !self.noUpload) {
@@ -447,34 +339,28 @@ class ForgeCanvas {
             }
         });
 
-        imageContainer.addEventListener('pointerup', function (event) {
-            if (self.dragging) {
-                self.handleDragEnd(event, false);
-            }
+        imageContainer.addEventListener('pointerup', event => {
+            if (self.dragging) self.handleDragEnd(event, false);
         });
 
-        imageContainer.addEventListener('pointerleave', function (event) {
-            if (self.dragging) {
-                self.handleDragEnd(event, true);
-            }
+        imageContainer.addEventListener('pointerleave', event => {
+            if (self.dragging) self.handleDragEnd(event, true);
         });
 
-        // Handle zooming with mouse wheel
         imageContainer.addEventListener('wheel', function (event) {
             if (event.ctrlKey) {
-                // Update brush size instead of zooming
                 const brushChange = event.deltaY * -0.01;
                 self.scribbleWidth = Math.max(1, self.scribbleWidth + brushChange);
-                scribbleWidthInput.value = self.scribbleWidth;
+                scribbleWidth.value = self.scribbleWidth;
                 const newSize = self.scribbleWidth * 20;
-                scribbleIndicator.style.width = `${newSize}px`;
-                scribbleIndicator.style.height = `${newSize}px`;
+                Object.assign(scribbleIndicator.style, {
+                    width: `${newSize}px`,
+                    height: `${newSize}px`
+                });
                 return;
             }
 
-            if (!self.img) {
-              return;
-            }
+            if (!self.img) return;
 
             event.preventDefault();
 
@@ -494,37 +380,33 @@ class ForgeCanvas {
             self.drawImage();
         });
 
-        // Prevent context menu on image container
-        imageContainer.addEventListener('contextmenu', function (event) {
+        imageContainer.addEventListener('contextmenu', event => {
             event.preventDefault();
             self.draggedJustNow = false;
         });
 
-        // Show toolbar on pointer over
-        imageContainer.addEventListener('pointerover', function () {
+        imageContainer.addEventListener('pointerover', () => {
             toolbar.style.opacity = '1';
             if (!self.img && !self.noUpload) {
                 imageContainer.style.cursor = 'pointer';
             }
         });
 
-        // Hide toolbar on pointer out
-        imageContainer.addEventListener('pointerout', function () {
+        imageContainer.addEventListener('pointerout', () => {
             toolbar.style.opacity = '0';
-            imageElement.style.cursor = '';
+            image.style.cursor = '';
             drawingCanvas.style.cursor = '';
             imageContainer.style.cursor = '';
             scribbleIndicator.style.display = 'none';
         });
 
-        // Handle resizing via resize line
-        resizeLine.addEventListener('pointerdown', function (event) {
+        resizeLine.addEventListener('pointerdown', event => {
             self.resizing = true;
             event.preventDefault();
             event.stopPropagation();
         });
 
-        document.addEventListener('pointermove', function (event) {
+        document.addEventListener('pointermove', event => {
             if (self.resizing) {
                 const containerRect = container.getBoundingClientRect();
                 const newHeight = event.clientY - containerRect.top;
@@ -534,51 +416,33 @@ class ForgeCanvas {
             }
         });
 
-        document.addEventListener('pointerup', function () {
-            self.resizing = false;
-        });
+        document.addEventListener('pointerup', () => self.resizing = false);
+        document.addEventListener('pointerleave', () => self.resizing = false);
 
-        document.addEventListener('pointerleave', function () {
-            self.resizing = false;
-        });
-
-        // Prevent default behaviors for drag events
         ['dragenter', 'dragover'].forEach(eventType => {
-            imageContainer.addEventListener(eventType, function (event) {
-                event.preventDefault();  // Prevent default only on 'dragenter' and 'dragover'
-            }, false);
+            imageContainer.addEventListener(eventType, event => event.preventDefault(), false);
         });
 
-        // Change cursor on drag events
         imageContainer.addEventListener('dragenter', () => {
-            imageElement.style.cursor = 'copy';
+            image.style.cursor = 'copy';
             drawingCanvas.style.cursor = 'copy';
         });
 
         imageContainer.addEventListener('dragleave', () => {
-            imageElement.style.cursor = '';
+            image.style.cursor = '';
             drawingCanvas.style.cursor = '';
         });
 
         imageContainer.addEventListener('drop', function (event) {
             event.preventDefault();
-            const {dataTransfer} = event;
-            const {files} = dataTransfer;
-            if (files.length > 0) {
-                self.handleFileUpload(files[0]);
-            }
+            const { dataTransfer } = event;
+            const { files } = dataTransfer;
+            if (files.length > 0) self.handleFileUpload(files[0]);
         });
 
-        // Pointer inside container tracking
-        imageContainer.addEventListener('pointerenter', () => {
-            self.pointerInsideContainer = true;
-        });
+        imageContainer.addEventListener('pointerenter', () => self.pointerInsideContainer = true);
+        imageContainer.addEventListener('pointerleave', () => self.pointerInsideContainer = false);
 
-        imageContainer.addEventListener('pointerleave', () => {
-            self.pointerInsideContainer = false;
-        });
-
-        // Prevent paste events
         document.addEventListener('paste', function (event) {
             if (self.pointerInsideContainer) {
                 event.preventDefault();
@@ -587,79 +451,45 @@ class ForgeCanvas {
             }
         });
 
-        // Keyboard shortcuts for undo and redo 
         document.addEventListener('keydown', function (event) {
             if (event.ctrlKey && event.key === 'z') {
-              event.preventDefault();
-              self.undo();
+                event.preventDefault();
+                self.undo();
             } else if (event.ctrlKey && event.key === 'y') {
-              event.preventDefault();
-              self.redo();
+                event.preventDefault();
+                self.redo();
             }
         });
 
-        // Maximize and minimize buttons
-        maxButton.addEventListener('click', function () {
-            self.maximize();
-        });
+        maxButton.addEventListener('click', () => self.maximize());
+        minButton.addEventListener('click', () => self.minimize());
 
-        minButton.addEventListener('click', function () {
-            self.minimize();
-        });
-
-        // Initialize undo/redo button states
         self.updateUndoRedoButtons();
 
-        // Listen for background and foreground changes
-        self.backgroundGradioBind.listen(function (base64Data) {
-            self.uploadBase64(base64Data);
+        self.backgroundGradioBind.listen(base64Data => self.uploadBase64(base64Data));
+        self.foregroundGradioBind.listen(base64Data => self.uploadBase64DrawingCanvas(base64Data));
+
+        drawingCanvas.addEventListener('wheel', event => event.preventDefault(), { passive: false });
+        drawingCanvas.addEventListener('keydown', event => {
+            if (event.ctrlKey || event.metaKey) event.preventDefault();
         });
 
-        self.foregroundGradioBind.listen(function (base64Data) {
-            self.uploadBase64DrawingCanvas(base64Data);
-        });
-
-        // Prevent default zoom behavior during brush interactions
-        drawingCanvas.addEventListener('wheel', function (event) {
-            // Prevent default zoom only when interacting with the canvas
-            event.preventDefault();
-        }, { passive: false });
-
-        drawingCanvas.addEventListener('keydown', function (event) {
-            // Prevent default actions for zoom shortcuts
-            if (event.ctrlKey || event.metaKey) {
-                event.preventDefault();
-            }
-        });
-
-        // Ensure the canvas is focusable to capture key events
         drawingCanvas.setAttribute('tabindex', '0');
     }
 
-    // Image Management Methods
     handleFileUpload(file) {
         if (file && !this.noUpload) {
             const reader = new FileReader();
-            reader.onload = (event) => {
-                this.uploadBase64(event.target.result);
-            };
+            reader.onload = event => this.uploadBase64(event.target.result);
             reader.readAsDataURL(file);
         }
     }
 
-    /**
-     * Uploads a base64 image to the background binding.
-     * @param {string} base64Data - The base64 image data.
-     */
     uploadBase64(base64Data) {
-        if (this.gradioConfig && !this.gradioConfig.version.startsWith('4')) {
-          return;
-        }
-        if (!this.gradioConfig) {
-          return;
-        }
+        if (this.gradioConfig && !this.gradioConfig.version.startsWith('4')) return;
+        if (!this.gradioConfig) return;
 
-        const img = new Image();
+        const img = this.tempImage || new Image();
         img.onload = () => {
             this.img = base64Data;
             this.originalWidth = img.width;
@@ -694,12 +524,8 @@ class ForgeCanvas {
         }
     }
 
-    /**
-     * Uploads the drawing canvas as a base64 image to the foreground binding.
-     * @param {string} base64Data - The base64 image data.
-     */
     uploadBase64DrawingCanvas(base64Data) {
-        const img = new Image();
+        const img = this.tempImage || new Image();
         img.onload = () => {
             const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
             const context = drawingCanvas.getContext('2d');
@@ -718,9 +544,6 @@ class ForgeCanvas {
         }
     }
 
-    /**
-     * Draws the image and updates the canvas.
-     */
     drawImage() {
         const imageElement = document.getElementById(`image_${this.uuid}`);
         const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
@@ -730,25 +553,26 @@ class ForgeCanvas {
             const scaledHeight = this.originalHeight * this.imgScale;
 
             imageElement.src = this.img;
-            imageElement.style.width = `${scaledWidth}px`;
-            imageElement.style.height = `${scaledHeight}px`;
-            imageElement.style.left = `${this.imgX}px`;
-            imageElement.style.top = `${this.imgY}px`;
-            imageElement.style.display = 'block';
+            Object.assign(imageElement.style, {
+                width: `${scaledWidth}px`,
+                height: `${scaledHeight}px`,
+                left: `${this.imgX}px`,
+                top: `${this.imgY}px`,
+                display: 'block'
+            });
 
-            drawingCanvas.style.width = `${scaledWidth}px`;
-            drawingCanvas.style.height = `${scaledHeight}px`;
-            drawingCanvas.style.left = `${this.imgX}px`;
-            drawingCanvas.style.top = `${this.imgY}px`;
+            Object.assign(drawingCanvas.style, {
+                width: `${scaledWidth}px`,
+                height: `${scaledHeight}px`,
+                left: `${this.imgX}px`,
+                top: `${this.imgY}px`
+            });
         } else {
             imageElement.src = '';
             imageElement.style.display = 'none';
         }
     }
 
-    /**
-     * Adjusts the initial position and scale of the image to fit the container.
-     */
     adjustInitialPositionAndScale() {
         const imageContainer = document.getElementById(`imageContainer_${this.uuid}`);
         const containerWidth = imageContainer.clientWidth - 20;
@@ -765,9 +589,6 @@ class ForgeCanvas {
         this.imgY = (imageContainer.clientHeight - scaledHeight) / 2;
     }
 
-    /**
-     * Resets the image to its initial state.
-     */
     resetImage() {
         const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
         const context = drawingCanvas.getContext('2d');
@@ -778,9 +599,6 @@ class ForgeCanvas {
         this.saveState();
     }
 
-    /**
-     * Removes the current image from the canvas.
-     */
     removeImage() {
         this.img = null;
         const imageElement = document.getElementById(`image_${this.uuid}`);
@@ -800,12 +618,6 @@ class ForgeCanvas {
         this.onImageUpload();
     }
 
-    /**
-     * Checks if the given coordinates are inside the image.
-     * @param {number} x - The x-coordinate.
-     * @param {number} y - The y-coordinate.
-     * @returns {boolean} - True if inside the image, else false.
-     */
     isInsideImage(x, y) {
         const scaledWidth = this.originalWidth * this.imgScale;
         const scaledHeight = this.originalHeight * this.imgScale;
@@ -817,11 +629,6 @@ class ForgeCanvas {
         );
     }
 
-    // Drawing & Canvas Manipulation
-    /**
-     * Handles drawing on the canvas.
-     * @param {PointerEvent} event - The pointer event.
-     */
     handleDraw(event) {
         const context = this.drawingCanvas.getContext('2d');
         const rect = this.drawingCanvas.getBoundingClientRect();
@@ -877,10 +684,6 @@ class ForgeCanvas {
         }
     }
 
-    /**
-     * Handles erasing on the canvas.
-     * @param {PointerEvent} event - The pointer event.
-     */
     handleErase(event) {
         const context = this.drawingCanvas.getContext('2d');
         const rect = this.drawingCanvas.getBoundingClientRect();
@@ -888,17 +691,14 @@ class ForgeCanvas {
         const y = (event.clientY - rect.top) / this.imgScale;
         const eraserSize = (this.scribbleWidth / this.imgScale) * 20;
 
-        // Store current point
         if (!this.lastErasePoint) {
             this.lastErasePoint = { x, y };
         }
 
-        // Calculate distance between last and current point
         const dx = x - this.lastErasePoint.x;
         const dy = y - this.lastErasePoint.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        // If distance is small enough, just erase at current point
         if (distance < eraserSize / 4) {
             context.beginPath();
             context.arc(x, y, eraserSize / 2, 0, Math.PI * 2);
@@ -907,13 +707,12 @@ class ForgeCanvas {
             context.fill();
             context.closePath();
         } else {
-            // Interpolate points for smooth erasing
             const steps = Math.ceil(distance / (eraserSize / 4));
             for (let i = 0; i < steps; i++) {
                 const t = i / steps;
                 const interpX = this.lastErasePoint.x + dx * t;
                 const interpY = this.lastErasePoint.y + dy * t;
-                
+
                 context.beginPath();
                 context.arc(interpX, interpY, eraserSize / 2, 0, Math.PI * 2);
                 context.fillStyle = 'rgba(0,0,0,1)';
@@ -923,16 +722,10 @@ class ForgeCanvas {
             }
         }
 
-        // Update last point
         this.lastErasePoint = { x, y };
         this.eraseChanged = true;
     }
 
-    /**
-     * Handles the end of a drag event.
-     * @param {PointerEvent} event - The pointer event.
-     * @param {boolean} isLeaving - Whether the pointer is leaving the container.
-     */
     handleDragEnd(event, isLeaving) {
         this.dragging = false;
         const imageElement = document.getElementById(`image_${this.uuid}`);
@@ -942,12 +735,8 @@ class ForgeCanvas {
         drawingCanvas.style.cursor = 'grab';
     }
 
-    /**
-     * Handles paste events
-     * @param {ClipboardEvent} event - The paste event.
-     */
     handlePaste(event) {
-        const {items} = event.clipboardData;
+        const { items } = event.clipboardData;
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             if (item.type.indexOf('image') !== -1) {
@@ -958,10 +747,6 @@ class ForgeCanvas {
         }
     }
 
-    // History Management
-    /**
-     * Saves the current state for undo/redo functionality.
-     */
     saveState() {
         const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
         const context = drawingCanvas.getContext('2d');
@@ -974,9 +759,6 @@ class ForgeCanvas {
         this.onDrawingCanvasUpload();
     }
 
-    /**
-     * Restores the canvas to a previous state.
-     */
     restoreState() {
         const drawingCanvas = document.getElementById(`drawingCanvas_${this.uuid}`);
         const context = drawingCanvas.getContext('2d');
@@ -986,9 +768,6 @@ class ForgeCanvas {
         this.onDrawingCanvasUpload();
     }
 
-    /**
-     * Undoes the last action.
-     */
     undo() {
         if (this.historyIndex > 0) {
             this.historyIndex--;
@@ -997,9 +776,6 @@ class ForgeCanvas {
         }
     }
 
-    /**
-     * Redoes the last undone action.
-     */
     redo() {
         if (this.historyIndex < this.history.length - 1) {
             this.historyIndex++;
@@ -1008,9 +784,6 @@ class ForgeCanvas {
         }
     }
 
-    /**
-     * Updates the state of undo and redo buttons.
-     */
     updateUndoRedoButtons() {
         const undoButton = document.getElementById(`undoButton_${this.uuid}`);
         const redoButton = document.getElementById(`redoButton_${this.uuid}`);
@@ -1022,10 +795,6 @@ class ForgeCanvas {
         redoButton.style.opacity = redoButton.disabled ? '0.5' : '1';
     }
 
-    // Event Callbacks
-    /**
-     * Called when an image is uploaded.
-     */
     onImageUpload() {
         if (!this.img) {
             this.backgroundGradioBind.setValue('');
@@ -1033,7 +802,7 @@ class ForgeCanvas {
         }
 
         const imageElement = document.getElementById(`image_${this.uuid}`);
-        const {tempCanvas} = this;
+        const { tempCanvas } = this;
         const context = tempCanvas.getContext('2d');
 
         tempCanvas.width = this.originalWidth;
@@ -1044,9 +813,6 @@ class ForgeCanvas {
         this.backgroundGradioBind.setValue(base64Data);
     }
 
-    /**
-     * Called when the drawing canvas is updated.
-     */
     onDrawingCanvasUpload() {
         if (!this.img) {
             this.foregroundGradioBind.setValue('');
@@ -1058,21 +824,14 @@ class ForgeCanvas {
         this.foregroundGradioBind.setValue(base64Data);
     }
 
-    // Window Management
-    /**
-     * Maximizes the canvas container.
-     */
     maximize() {
-        if (this.maximized) {
-          return;
-        }
+        if (this.maximized) return;
 
         const container = document.getElementById(`container_${this.uuid}`);
         const toolbar = document.getElementById(`toolbar_${this.uuid}`);
         const maxButton = document.getElementById(`maxButton_${this.uuid}`);
         const minButton = document.getElementById(`minButton_${this.uuid}`);
 
-        // Save original state
         this.originalState = {
             width: container.style.width,
             height: container.style.height,
@@ -1082,38 +841,35 @@ class ForgeCanvas {
             zIndex: container.style.zIndex,
         };
 
-        // Apply maximized styles
-        container.style.width = '100vw';
-        container.style.height = '100vh';
-        container.style.top = '0';
-        container.style.left = '0';
-        container.style.position = 'fixed';
-        container.style.zIndex = '1000';
+        Object.assign(container.style, {
+            width: '100vw',
+            height: '100vh',
+            top: '0',
+            left: '0',
+            position: 'fixed',
+            zIndex: '1000'
+        });
 
         maxButton.style.display = 'none';
         minButton.style.display = 'inline-block';
         this.maximized = true;
     }
 
-    /**
-     * Restores the canvas container to its original size.
-     */
     minimize() {
-        if (!this.maximized) {
-          return;
-        }
+        if (!this.maximized) return;
 
         const container = document.getElementById(`container_${this.uuid}`);
         const maxButton = document.getElementById(`maxButton_${this.uuid}`);
         const minButton = document.getElementById(`minButton_${this.uuid}`);
 
-        // Restore original state
-        container.style.width = this.originalState.width;
-        container.style.height = this.originalState.height;
-        container.style.top = this.originalState.top;
-        container.style.left = this.originalState.left;
-        container.style.position = this.originalState.position;
-        container.style.zIndex = this.originalState.zIndex;
+        Object.assign(container.style, {
+            width: this.originalState.width,
+            height: this.originalState.height,
+            top: this.originalState.top,
+            left: this.originalState.left,
+            position: this.originalState.position,
+            zIndex: this.originalState.zIndex
+        });
 
         maxButton.style.display = 'inline-block';
         minButton.style.display = 'none';
@@ -1124,50 +880,3 @@ class ForgeCanvas {
 // Constants
 const True = true;
 const False = false;
-
-/**
- * Usage Example:
- * 
- * // Assuming you have the following HTML structure:
- * 
- * <div id="container_UUID" class="container">
- *   <div id="toolbar_UUID" class="toolbar">
- *     <button id="uploadButton_UUID">Upload</button>
- *     <button id="resetButton_UUID">Reset</button>
- *     <button id="centerButton_UUID">Center</button>
- *     <button id="removeButton_UUID">Remove</button>
- *     <button id="undoButton_UUID" disabled>Undo</button>
- *     <button id="redoButton_UUID" disabled>Redo</button>
- *     <button id="maxButton_UUID">Maximize</button>
- *     <button id="minButton_UUID" style="display:none;">Minimize</button>
- *     <!-- Add other toolbar elements as needed -->
- *   </div>
- *   <div id="imageContainer_UUID" class="image-container">
- *     <img id="image_UUID" class="image" src="" alt="Canvas Image" />
- *     <canvas id="drawingCanvas_UUID" class="drawing-canvas"></canvas>
- *     <div id="resizeLine_UUID" class="resize-line"></div>
- *     <div id="scribbleIndicator_UUID" class="scribble-indicator"></div>
- *     <input type="file" id="imageInput_UUID" accept="image/*" style="display:none;" />
- *     <div id="uploadHint_UUID" class="upload-hint">Drag & Drop an image here or click to upload.</div>
- *     <!-- Add other elements as needed -->
- *   </div>
- * </div>
- * 
- * // Initialize the ForgeCanvas
- * const canvas = new ForgeCanvas(
- *   'UUID',            // Unique identifier
- *   false,             // noUpload
- *   false,             // noScribbles
- *   false,             // mask
- *   512,               // initialHeight
- *   '#000000',         // scribbleColor
- *   false,             // scribbleColorFixed
- *   4,                 // scribbleWidth
- *   false,             // scribbleWidthFixed
- *   100,               // scribbleAlpha
- *   false,             // scribbleAlphaFixed
- *   0,                 // scribbleSoftness
- *   false              // scribbleSoftnessFixed
- * );
- */
-
