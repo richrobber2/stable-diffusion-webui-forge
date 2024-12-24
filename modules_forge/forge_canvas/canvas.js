@@ -917,7 +917,7 @@ class ForgeCanvas {
             this.originalWidth = img.width;
             this.originalHeight = img.height;
 
-            const drawingCanvas = this.elems.drawingCanvas;
+            const {drawingCanvas} = this.elems;
             if (drawingCanvas && (drawingCanvas.width !== img.width || drawingCanvas.height !== img.height)) {
                 drawingCanvas.width = img.width;
                 drawingCanvas.height = img.height;
@@ -937,7 +937,7 @@ class ForgeCanvas {
             img.src = base64Data;
         } else {
             this.img = null;
-            const drawingCanvas = this.elems.drawingCanvas;
+            const {drawingCanvas} = this.elems;
             if (drawingCanvas) {
                 drawingCanvas.width = 1;
                 drawingCanvas.height = 1;
@@ -952,7 +952,7 @@ class ForgeCanvas {
     uploadBase64DrawingCanvas(base64Data) {
         const img = this.tempImage || new Image();
         img.onload = () => {
-            const drawingCanvas = this.elems.drawingCanvas;
+            const {drawingCanvas} = this.elems;
             if (!drawingCanvas) return;
             this.drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
             this.drawingCtx.drawImage(img, 0, 0);
@@ -962,7 +962,7 @@ class ForgeCanvas {
         if (base64Data) {
             img.src = base64Data;
         } else {
-            const drawingCanvas = this.elems.drawingCanvas;
+            const {drawingCanvas} = this.elems;
             if (!drawingCanvas) return;
             this.drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
             this.saveState();
@@ -1068,7 +1068,7 @@ class ForgeCanvas {
     }
 
     saveState() {
-        const drawingCanvas = this.elems.drawingCanvas;
+        const {drawingCanvas} = this.elems;
         if (!drawingCanvas) return;
 
         const state = {
@@ -1124,7 +1124,7 @@ class ForgeCanvas {
     }
 
     applyState(state) {
-        const drawingCanvas = this.elems.drawingCanvas;
+        const {drawingCanvas} = this.elems;
         if (!drawingCanvas) return;
         this.drawingCtx.putImageData(state.imageData, 0, 0);
     }
@@ -1158,7 +1158,7 @@ class ForgeCanvas {
             this.foregroundGradioBind.setValue('');
             return;
         }
-        const drawingCanvas = this.elems.drawingCanvas;
+        const {drawingCanvas} = this.elems;
         if (!drawingCanvas) return;
 
         // Optionally skip the debounce if forceImmediate
