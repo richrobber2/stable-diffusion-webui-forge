@@ -59,7 +59,7 @@ def create_ui():
             output_panel.html_log,
         ],
         show_progress=False,
-    )
+    ) 
 
     parameters_copypaste.add_paste_fields("extras", extras_image, None)
 

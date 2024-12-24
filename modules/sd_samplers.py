@@ -21,7 +21,6 @@ samplers_for_img2img: list[sd_samplers_common.SamplerData] = []
 samplers_map = {}
 samplers_hidden = {}
 
-
 def find_sampler_config(name):
     return (
         all_samplers_map.get(name)
@@ -29,11 +28,11 @@ def find_sampler_config(name):
         else all_samplers[0]
     )
 
-
 def create_sampler(name, model):
     config = find_sampler_config(name)
 
-    assert config is not None, f'bad sampler name: {name}'
+    if config is None:
+        raise ValueError(f'Bad sampler name: {name}')
 
     if model.is_sdxl and config.options.get("no_sdxl", False):
         raise ValueError(f"Sampler {config.name} is not supported for SDXL")
@@ -42,7 +41,6 @@ def create_sampler(name, model):
     sampler.config = config
 
     return sampler
-
 
 def set_samplers():
     global samplers, samplers_for_img2img, samplers_hidden
@@ -59,31 +57,25 @@ def set_samplers():
 
     return
 
-
 def add_sampler(sampler):
     global all_samplers, all_samplers_map
-    if sampler.name not in [x.name for x in all_samplers]:
+    if sampler.name not in all_samplers_map:
         all_samplers.append(sampler)
-        all_samplers_map = {x.name: x for x in all_samplers}
+        all_samplers_map[sampler.name] = sampler
         set_samplers()
     return
-
 
 def visible_sampler_names():
     return [x.name for x in samplers if x.name not in samplers_hidden]
 
-
 def visible_samplers():
     return [x for x in samplers if x.name not in samplers_hidden]
-
 
 def get_sampler_from_infotext(d: dict):
     return get_sampler_and_scheduler(d.get("Sampler"), d.get("Schedule type"))[0]
 
-
 def get_scheduler_from_infotext(d: dict):
     return get_sampler_and_scheduler(d.get("Sampler"), d.get("Schedule type"))[1]
-
 
 def get_hr_sampler_and_scheduler(d: dict):
     hr_sampler = d.get("Hires sampler", "Use same sampler")
@@ -99,14 +91,11 @@ def get_hr_sampler_and_scheduler(d: dict):
 
     return sampler, scheduler
 
-
 def get_hr_sampler_from_infotext(d: dict):
     return get_hr_sampler_and_scheduler(d)[0]
 
-
 def get_hr_scheduler_from_infotext(d: dict):
     return get_hr_sampler_and_scheduler(d)[1]
-
 
 @functools.cache
 def get_sampler_and_scheduler(sampler_name, scheduler_name, *, convert_automatic=True):
@@ -126,18 +115,15 @@ def get_sampler_and_scheduler(sampler_name, scheduler_name, *, convert_automatic
 
     sampler = all_samplers_map.get(name, default_sampler)
 
-    # revert back to Automatic if it's the default scheduler for the selected sampler
     if convert_automatic and sampler.options.get('scheduler', None) == found_scheduler.name:
         found_scheduler = sd_schedulers.schedulers[0]
 
     return sampler.name, found_scheduler.label
-
 
 def fix_p_invalid_sampler_and_scheduler(p):
     i_sampler_name, i_scheduler = p.sampler_name, p.scheduler
     p.sampler_name, p.scheduler = get_sampler_and_scheduler(p.sampler_name, p.scheduler, convert_automatic=False)
     if p.sampler_name != i_sampler_name or i_scheduler != p.scheduler:
         logging.warning(f'Sampler Scheduler autocorrection: "{i_sampler_name}" -> "{p.sampler_name}", "{i_scheduler}" -> "{p.scheduler}"')
-
 
 set_samplers()

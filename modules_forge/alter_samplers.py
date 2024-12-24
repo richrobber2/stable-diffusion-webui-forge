@@ -6,7 +6,7 @@ class AlterSampler(sd_samplers_kdiffusion.KDiffusionSampler):
     def __init__(self, sd_model, sampler_name):
         self.sampler_name = sampler_name
         self.unet = sd_model.forge_objects.unet
-        sampler_function = getattr(k_diffusion_extra, "sample_{}".format(sampler_name))
+        sampler_function = getattr(k_diffusion_extra, f"sample_{sampler_name}")
         super().__init__(sampler_function, sd_model, None)
 
 

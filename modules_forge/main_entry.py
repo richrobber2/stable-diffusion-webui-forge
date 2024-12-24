@@ -9,7 +9,8 @@ from backend.args import dynamic_args
 from modules.shared import cmd_opts
 
 
-total_vram = int(memory_management.total_vram)
+available_vram = memory_management.get_total_memory(memory_management.get_torch_device())
+total_vram = int(available_vram / (1024 * 1024))
 
 ui_forge_preset: gr.Radio = None
 

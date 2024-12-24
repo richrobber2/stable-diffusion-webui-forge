@@ -25,7 +25,8 @@ def get_current_stream():
                 torch.zeros((1, 1)).to(device, torch.float32)
             stream.synchronize()
             return stream
-    except:
+    except Exception as e:
+        print(f"Error in get_current_stream: {e}")
         return None
 
 
@@ -45,7 +46,8 @@ def get_new_stream():
                 torch.zeros((1, 1)).to(device, torch.float32)
             stream.synchronize()
             return stream
-    except:
+    except Exception as e:
+        print(f"Error in get_new_stream: {e}")
         return None
 
 

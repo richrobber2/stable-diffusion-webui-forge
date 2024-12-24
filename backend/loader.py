@@ -23,180 +23,205 @@ from backend.diffusion_engine.sd20 import StableDiffusion2
 from backend.diffusion_engine.sdxl import StableDiffusionXL
 from backend.diffusion_engine.flux import Flux
 
-
 possible_models = [StableDiffusion, StableDiffusion2, StableDiffusionXL, Flux]
-
 
 logging.getLogger("diffusers").setLevel(logging.ERROR)
 dir_path = os.path.dirname(__file__)
 
 
 def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_path, state_dict):
+    """
+    Load a Hugging Face component given its configuration and optional state_dict.
+    Components can be tokenizers, schedulers, VAE, text encoders, UNets, etc.
+    """
     config_path = os.path.join(repo_path, component_name)
 
+    # Skip irrelevant components
     if component_name in ['feature_extractor', 'safety_checker']:
         return None
 
     if lib_name in ['transformers', 'diffusers']:
-        if component_name in ['scheduler']:
+        # Handle known component types
+        if component_name == 'scheduler':
             cls = getattr(importlib.import_module(lib_name), cls_name)
             return cls.from_pretrained(os.path.join(repo_path, component_name))
+
         if component_name.startswith('tokenizer'):
+            # Load tokenizer and suppress length warnings
             cls = getattr(importlib.import_module(lib_name), cls_name)
             comp = cls.from_pretrained(os.path.join(repo_path, component_name))
             comp._eventual_warn_about_too_long_sequence = lambda *args, **kwargs: None
             return comp
-        if cls_name in ['AutoencoderKL']:
+
+        # Specialized components based on class names
+        if cls_name == 'AutoencoderKL':
             return _extracted_from_load_huggingface_component_17(state_dict, config_path)
+
         if component_name.startswith('text_encoder') and cls_name in ['CLIPTextModel', 'CLIPTextModelWithProjection']:
-            return _extracted_from_load_huggingface_component_19(
-                state_dict, config_path, cls_name
-            )
+            return _extracted_from_load_huggingface_component_19(state_dict, config_path, cls_name)
+
         if cls_name == 'T5EncoderModel':
-            return _extracted_from_load_huggingface_component_38(
-                state_dict, config_path, cls_name
-            )
+            return _extracted_from_load_huggingface_component_38(state_dict, config_path, cls_name)
+
         if cls_name == 'UNet2DConditionModel':
-            assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have model state dict!'
-
-            model_loader = None
+            # UNet model (or similar conditional diffusion models)
+            assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have a proper UNet state dict!'
             model_loader = lambda c: IntegratedUNet2DConditionModel.from_config(c)
-            if cls_name == 'FluxTransformer2DModel':
-                from backend.nn.flux import IntegratedFluxTransformer2DModel
-                model_loader = lambda c: IntegratedFluxTransformer2DModel(**c)
+            return _extracted_from_load_huggingface_component_88(guess, state_dict, model_loader)
 
-            return _extracted_from_load_huggingface_component_88(
-                guess, state_dict, model_loader
-            )
         elif cls_name == 'FluxTransformer2DModel':
-            assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have model state dict!'
-
-            model_loader = None
+            assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have a proper Flux state dict!'
             from backend.nn.flux import IntegratedFluxTransformer2DModel
             model_loader = lambda c: IntegratedFluxTransformer2DModel(**c)
+            return _extracted_from_load_huggingface_component_88(guess, state_dict, model_loader)
 
-            return _extracted_from_load_huggingface_component_88(
-                guess, state_dict, model_loader
-            )
+    # If none of the conditions matched
     print(f'Skipped: {component_name} = {lib_name}.{cls_name}')
     return None
 
 
-# TODO Rename this here and in `load_huggingface_component`
-def _extracted_from_load_huggingface_component_38(state_dict, config_path, cls_name):
-    assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have T5 state dict!'
+def _decide_storage_dtype_and_log(state_dict, default_dtype, component_name):
+    """
+    Decide the storage dtype for a model based on the given state_dict and default dtype.
+    Also logs details about the chosen dtype and handles special quantization formats.
 
+    Args:
+        state_dict (dict): The component's state dict.
+        default_dtype (torch.dtype or str): The default dtype decided by heuristics.
+        component_name (str): For logging purposes, the name of the component (e.g. 'T5', 'UNet', 'VAE').
+
+    Returns:
+        torch.dtype or str: The selected storage dtype.
+    """
+    state_dict_dtype = memory_management.state_dict_dtype(state_dict)
+    # If special quantization is detected
+    special_types = [torch.float8_e4m3fn, torch.float8_e5m2, 'nf4', 'fp4', 'gguf']
+    if state_dict_dtype in special_types:
+        print(f'Using Detected {component_name} Data Type: {state_dict_dtype}')
+        # For gguf, print additional info
+        if state_dict_dtype == 'gguf':
+            beautiful_print_gguf_state_dict_statics(state_dict)
+        return state_dict_dtype
+    else:
+        print(f'Using Default {component_name} Data Type: {default_dtype}')
+        return default_dtype
+
+
+def _init_model_with_forge(config, device, storage_dtype, computation_dtype=None, manual_cast_enabled=True, bnb_dtype=None, model_loader=None):
+    """
+    Initialize a model with Forge operations considering device, dtype, and optional quantization parameters.
+
+    Args:
+        config (dict): The model config.
+        device (torch.device): The device to initially load parameters on.
+        storage_dtype (torch.dtype or str): The storage dtype for the model.
+        computation_dtype (torch.dtype, optional): The dtype for computations. Defaults to storage_dtype if None.
+        manual_cast_enabled (bool): Whether manual casting is enabled.
+        bnb_dtype (str, optional): If using bitsandbytes or special quantization formats.
+        model_loader (callable, optional): A function that returns a model instance when given a config.
+
+    Returns:
+        nn.Module: The initialized model.
+    """
+    if computation_dtype is None:
+        computation_dtype = storage_dtype
+
+    op_args = dict(device=device, dtype=storage_dtype, manual_cast_enabled=manual_cast_enabled)
+    if bnb_dtype:
+        op_args['bnb_dtype'] = bnb_dtype
+
+    with modeling_utils.no_init_weights():
+        with using_forge_operations(**op_args):
+            model = model_loader(config) if model_loader else None
+            return model
+
+
+# Specialized loading functions:
+
+def _extracted_from_load_huggingface_component_38(state_dict, config_path, cls_name):
+    # Load T5 encoder model
     from backend.nn.t5 import IntegratedT5
     config = read_arbitrary_config(config_path)
 
-    storage_dtype = memory_management.text_encoder_dtype()
-    state_dict_dtype = memory_management.state_dict_dtype(state_dict)
+    default_dtype = memory_management.text_encoder_dtype()
+    storage_dtype = _decide_storage_dtype_and_log(state_dict, default_dtype, 'T5')
 
-    if state_dict_dtype in [torch.float8_e4m3fn, torch.float8_e5m2, 'nf4', 'fp4', 'gguf']:
-        storage_dtype = _extracted_from_load_huggingface_component_57(
-            'Using Detected T5 Data Type: ',
-            state_dict_dtype,
-            state_dict,
-        )
+    # Determine if we use bnb quantization
+    quant_formats = ['nf4', 'fp4', 'gguf']
+    if storage_dtype in quant_formats:
+        # No manual cast in these quant modes
+        model = _init_model_with_forge(config, memory_management.cpu, memory_management.text_encoder_dtype(), manual_cast_enabled=False, bnb_dtype=storage_dtype, model_loader=IntegratedT5)
     else:
-        print(f'Using Default T5 Data Type: {storage_dtype}')
-
-    if storage_dtype in ['nf4', 'fp4', 'gguf']:
-        with modeling_utils.no_init_weights():
-            with using_forge_operations(device=memory_management.cpu, dtype=memory_management.text_encoder_dtype(), manual_cast_enabled=False, bnb_dtype=storage_dtype):
-                model = IntegratedT5(config)
-    else:
-        with modeling_utils.no_init_weights():
-            with using_forge_operations(device=memory_management.cpu, dtype=storage_dtype, manual_cast_enabled=True):
-                model = IntegratedT5(config)
+        model = _init_model_with_forge(config, memory_management.cpu, storage_dtype, manual_cast_enabled=True, model_loader=IntegratedT5)
 
     load_state_dict(model, state_dict, log_name=cls_name, ignore_errors=['transformer.encoder.embed_tokens.weight', 'logit_scale'])
-
     return model
 
 
-# TODO Rename this here and in `load_huggingface_component`
 def _extracted_from_load_huggingface_component_19(state_dict, config_path, cls_name):
-    assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have CLIP state dict!'
-
+    # Load CLIP text encoder model
     from transformers import CLIPTextConfig, CLIPTextModel
     config = CLIPTextConfig.from_pretrained(config_path)
 
-    to_args = dict(device=memory_management.cpu, dtype=memory_management.text_encoder_dtype())
-
-    with modeling_utils.no_init_weights():
-        with using_forge_operations(**to_args, manual_cast_enabled=True):
-            model = IntegratedCLIP(CLIPTextModel, config, add_text_projection=True).to(**to_args)
+    model = _init_model_with_forge(config, memory_management.cpu, memory_management.text_encoder_dtype(), manual_cast_enabled=True,
+                                   model_loader=lambda c: IntegratedCLIP(CLIPTextModel, c, add_text_projection=True))
 
     load_state_dict(model, state_dict, ignore_errors=[
         'transformer.text_projection.weight',
         'transformer.text_model.embeddings.position_ids',
         'logit_scale'
     ], log_name=cls_name)
-
     return model
 
 
-# TODO Rename this here and in `load_huggingface_component`
 def _extracted_from_load_huggingface_component_17(state_dict, config_path):
-    assert isinstance(state_dict, dict) and len(state_dict) > 16, 'You do not have VAE state dict!'
-
+    # Load VAE
+    assert isinstance(state_dict, dict) and len(state_dict) > 16, 'Invalid VAE state dict!'
     config = IntegratedAutoencoderKL.load_config(config_path)
 
-    with using_forge_operations(device=memory_management.cpu, dtype=memory_management.vae_dtype()):
-        model = IntegratedAutoencoderKL.from_config(config)
+    # Initialize VAE directly with chosen dtype (usually on CPU)
+    model = _init_model_with_forge(config, memory_management.cpu, memory_management.vae_dtype(), model_loader=IntegratedAutoencoderKL.from_config)
 
-    if 'decoder.up_blocks.0.resnets.0.norm1.weight' in state_dict.keys(): #diffusers format
+    # Convert diffusers format if needed
+    if 'decoder.up_blocks.0.resnets.0.norm1.weight' in state_dict:
         state_dict = huggingface_guess.diffusers_convert.convert_vae_state_dict(state_dict)
+
     load_state_dict(model, state_dict, ignore_start='loss.')
     return model
 
 
-# TODO Rename this here and in `load_huggingface_component`
-def _extracted_from_load_huggingface_component_57(arg0, state_dict_dtype, state_dict):
-    print(f'{arg0}{state_dict_dtype}')
-    result = state_dict_dtype
-    if state_dict_dtype in ['nf4', 'fp4', 'gguf']:
-        print('Using pre-quant state dict!')
-        if state_dict_dtype in ['gguf']:
-            beautiful_print_gguf_state_dict_statics(state_dict)
-    return result
-
-
-# TODO Rename this here and in `load_huggingface_component`
 def _extracted_from_load_huggingface_component_88(guess, state_dict, model_loader):
+    # Load UNet or Flux model
     unet_config = guess.unet_config.copy()
     state_dict_parameters = memory_management.state_dict_parameters(state_dict)
-    state_dict_dtype = memory_management.state_dict_dtype(state_dict)
 
-    storage_dtype = memory_management.unet_dtype(model_params=state_dict_parameters, supported_dtypes=guess.supported_inference_dtypes)
-
+    # Decide storage dtype based on state dict
+    default_storage_dtype = memory_management.unet_dtype(model_params=state_dict_parameters, supported_dtypes=guess.supported_inference_dtypes)
     unet_storage_dtype_overwrite = backend.args.dynamic_args.get('forge_unet_storage_dtype')
-
     if unet_storage_dtype_overwrite is not None:
-        storage_dtype = unet_storage_dtype_overwrite
-    elif state_dict_dtype in [torch.float8_e4m3fn, torch.float8_e5m2, 'nf4', 'fp4', 'gguf']:
-        storage_dtype = _extracted_from_load_huggingface_component_57(
-            'Using Detected UNet Type: ', state_dict_dtype, state_dict
-        )
+        default_storage_dtype = unet_storage_dtype_overwrite
+
+    storage_dtype = _decide_storage_dtype_and_log(state_dict, default_storage_dtype, 'UNet')
+
     load_device = memory_management.get_torch_device()
     computation_dtype = memory_management.get_computation_dtype(load_device, parameters=state_dict_parameters, supported_dtypes=guess.supported_inference_dtypes)
     offload_device = memory_management.unet_offload_device()
 
-    if storage_dtype in ['nf4', 'fp4', 'gguf']:
+    quant_formats = ['nf4', 'fp4', 'gguf']
+    if storage_dtype in quant_formats:
+        # When using quantized formats
         initial_device = memory_management.unet_inital_load_device(parameters=state_dict_parameters, dtype=computation_dtype)
-        with using_forge_operations(device=initial_device, dtype=computation_dtype, manual_cast_enabled=False, bnb_dtype=storage_dtype):
-            model = model_loader(unet_config)
+        model = _init_model_with_forge(unet_config, initial_device, computation_dtype, manual_cast_enabled=False, bnb_dtype=storage_dtype, model_loader=model_loader)
     else:
+        # Non-quantized scenario
         initial_device = memory_management.unet_inital_load_device(parameters=state_dict_parameters, dtype=storage_dtype)
-        need_manual_cast = storage_dtype != computation_dtype
-        to_args = dict(device=initial_device, dtype=storage_dtype)
-
-        with using_forge_operations(**to_args, manual_cast_enabled=need_manual_cast):
-            model = model_loader(unet_config).to(**to_args)
+        need_manual_cast = (storage_dtype != computation_dtype)
+        model = _init_model_with_forge(unet_config, initial_device, storage_dtype, computation_dtype=computation_dtype,
+                                       manual_cast_enabled=need_manual_cast, model_loader=model_loader)
 
     load_state_dict(model, state_dict)
 
+    # Store config and dtype info in model
     if hasattr(model, '_internal_dict'):
         model._internal_dict = unet_config
     else:
@@ -212,9 +237,13 @@ def _extracted_from_load_huggingface_component_88(guess, state_dict, model_loade
 
 
 def replace_state_dict(sd, asd, guess):
+    """
+    Merge or replace parts of sd with asd, handling special naming conventions for T5, VAE, CLIP.
+    """
     vae_key_prefix = guess.vae_key_prefix[0]
     text_encoder_key_prefix = guess.text_encoder_key_prefix[0]
 
+    # Handle weird T5 format if present
     if 'enc.blk.0.attn_k.weight' in asd:
         wierd_t5_format_from_city96 = {
             "enc.": "encoder.",
@@ -233,16 +262,19 @@ def replace_state_dict(sd, asd, guess):
             "ffn_norm": "layer.1.layer_norm",
         }
         wierd_t5_pre_quant_keys_from_city96 = ['shared.weight']
-        
-        # In-place modification of 'asd'
+
+        # Rename keys in asd
         for key in list(asd.keys()):
+            new_key = key
             for old, new in wierd_t5_format_from_city96.items():
-                key = key.replace(old, new)
-            asd[key] = asd.pop(key)
-        
+                new_key = new_key.replace(old, new)
+            asd[new_key] = asd.pop(key)
+
+        # Dequantize special keys
         for key in wierd_t5_pre_quant_keys_from_city96:
             asd[key] = asd[key].dequantize_as_pytorch_parameter()
 
+    # Handle merging VAE weights if needed
     if "decoder.conv_in.weight" in asd:
         keys_to_delete = [k for k in sd if k.startswith(vae_key_prefix)]
         for k in keys_to_delete:
@@ -250,6 +282,7 @@ def replace_state_dict(sd, asd, guess):
         for k, v in asd.items():
             sd[vae_key_prefix + k] = v
 
+    # Handle merging CLIP weights
     if 'text_model.encoder.layers.0.layer_norm1.weight' in asd:
         keys_to_delete = [k for k in sd if k.startswith(f"{text_encoder_key_prefix}clip_l.")]
         for k in keys_to_delete:
@@ -257,6 +290,7 @@ def replace_state_dict(sd, asd, guess):
         for k, v in asd.items():
             sd[f"{text_encoder_key_prefix}clip_l.transformer.{k}"] = v
 
+    # Handle merging T5 XXL weights
     if 'encoder.block.0.layer.0.SelfAttention.k.weight' in asd:
         keys_to_delete = [k for k in sd if k.startswith(f"{text_encoder_key_prefix}t5xxl.")]
         for k in keys_to_delete:
@@ -268,13 +302,19 @@ def replace_state_dict(sd, asd, guess):
 
 
 def preprocess_state_dict(sd):
+    """
+    Preprocess the given state_dict for uniformity.
+    Some models need a "model.diffusion_model." prefix if missing.
+    """
     if any("double_block" in k for k in sd.keys()) and not any(k.startswith("model.diffusion_model") for k in sd.keys()):
         sd = {f"model.diffusion_model.{k}": v for k, v in sd.items()}
-
     return sd
 
 
 def split_state_dict(sd, additional_state_dicts: list = None):
+    """
+    Split the loaded state_dict into UNet, VAE, and text encoder components based on guessed model architecture.
+    """
     sd = load_torch_file(sd)
     sd = preprocess_state_dict(sd)
     guess = huggingface_guess.guess(sd)
@@ -310,24 +350,34 @@ def split_state_dict(sd, additional_state_dicts: list = None):
 
 @torch.inference_mode()
 def forge_loader(sd, additional_state_dicts=None):
+    """
+    Main loader function: from a given state_dict and optional additional dicts,
+    identify the model type, load huggingface components, and return a stable diffusion model instance.
+    """
     state_dicts, estimated_config = get_state_dicts_and_config(sd, additional_state_dicts)
     repo_name = estimated_config.huggingface_repo
     local_path = os.path.join(dir_path, 'huggingface', repo_name)
     config = DiffusionPipeline.load_config(local_path)
+
+    # Load components
     huggingface_components = load_components(config, state_dicts, estimated_config, local_path)
     yaml_config_prediction_type = get_yaml_config_prediction_type(sd)
     update_prediction_type(huggingface_components, yaml_config_prediction_type, estimated_config)
+
     return get_model(estimated_config, huggingface_components)
 
 
 def get_state_dicts_and_config(sd, additional_state_dicts):
     try:
         return split_state_dict(sd, additional_state_dicts=additional_state_dicts)
-    except:
-        raise ValueError('Failed to recognize model type!')
+    except Exception as e:
+        raise ValueError(f'Failed to recognize model type! Error: {e}')
 
 
 def load_components(config, state_dicts, estimated_config, local_path):
+    """
+    Load required huggingface components (tokenizer, scheduler, UNet, VAE, etc.) based on the pipeline config.
+    """
     huggingface_components = {}
     for component_name, v in config.items():
         if isinstance(v, list) and len(v) == 2:
@@ -342,6 +392,9 @@ def load_components(config, state_dicts, estimated_config, local_path):
 
 
 def get_yaml_config_prediction_type(sd):
+    """
+    Check if there's a .yaml config file next to the model file to determine the prediction_type ('v_prediction', 'epsilon', etc.)
+    """
     yaml_config = None
     with contextlib.suppress(ImportError):
         import yaml
@@ -361,8 +414,11 @@ def get_yaml_config_prediction_type(sd):
 
 
 def update_prediction_type(huggingface_components, yaml_config_prediction_type, estimated_config):
+    """
+    Update the scheduler's prediction_type based on YAML config or fallback to the model_type guess.
+    """
     if (
-        has_prediction_type := 'scheduler' in huggingface_components
+        'scheduler' in huggingface_components
         and hasattr(huggingface_components['scheduler'], 'config')
         and 'prediction_type' in huggingface_components['scheduler'].config
     ):
@@ -374,12 +430,19 @@ def update_prediction_type(huggingface_components, yaml_config_prediction_type, 
                 'V_PREDICTION': 'v_prediction',
                 'EDM': 'edm',
             }
-            huggingface_components['scheduler'].config.prediction_type = prediction_types.get(estimated_config.model_type.name, huggingface_components['scheduler'].config.prediction_type)
+            huggingface_components['scheduler'].config.prediction_type = prediction_types.get(
+                estimated_config.model_type.name,
+                huggingface_components['scheduler'].config.prediction_type
+            )
 
 
 def get_model(estimated_config, huggingface_components):
+    """
+    Given an estimated_config and loaded huggingface_components, try to instantiate one of the known stable diffusion model classes.
+    """
     for M in possible_models:
         if any(isinstance(estimated_config, x) for x in M.matched_guesses):
             return M(estimated_config=estimated_config, huggingface_components=huggingface_components)
+
     print('Failed to recognize model type!')
     return None

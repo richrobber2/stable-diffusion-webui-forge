@@ -92,14 +92,10 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         is_negative_prompt = getattr(prompt, 'is_negative_prompt', False)
 
         # Optimize tensor creation by using torch.empty and in-place assignment
-        embedding_values = torch.empty(6, 1, device=clip_pooled.device)
-        embedding_values[0].fill_(height)
-        embedding_values[1].fill_(width)
-        embedding_values[2].fill_(0)
-        embedding_values[3].fill_(0)
-        embedding_values[4].fill_(height)
-        embedding_values[5].fill_(width)
-
+        embedding_values = torch.tensor(
+            [height, width, 0, 0, height, width],
+            device=clip_pooled.device
+        ).view(6, 1)
         embedded = self.embedder(embedding_values)
         flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
 

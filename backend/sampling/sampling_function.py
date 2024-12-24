@@ -155,31 +155,15 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
     out_uncond_count = torch.ones_like(x_in) * 1e-37
 
     COND = 0
-    to_run = []
-    for x in cond:
-        p = get_area_and_mult(x, x_in, timestep)
-        if p is None:
-            continue
-
-        to_run += [(p, COND)]
+    UNCOND = 1
+    to_run = [(get_area_and_mult(x, x_in, timestep), COND) for x in cond if get_area_and_mult(x, x_in, timestep) is not None]
     if uncond is not None:
-        UNCOND = 1
+        to_run += [(get_area_and_mult(x, x_in, timestep), UNCOND) for x in uncond if get_area_and_mult(x, x_in, timestep) is not None]
 
-        for x in uncond:
-            p = get_area_and_mult(x, x_in, timestep)
-            if p is None:
-                continue
-
-            to_run += [(p, UNCOND)]
-
-    while len(to_run) > 0:
+    while to_run:
         first = to_run[0]
         first_shape = first[0][0].shape
-        to_batch_temp = [
-            x
-            for x in range(len(to_run))
-            if can_concat_cond(to_run[x][0], first[0])
-        ]
+        to_batch_temp = [x for x in range(len(to_run)) if can_concat_cond(to_run[x][0], first[0])]
         to_batch_temp.reverse()
         to_batch = to_batch_temp[:1]
 
@@ -187,12 +171,12 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
             memory_management.soft_empty_cache()
 
         free_memory = memory_management.get_free_memory(x_in.device)
-
         if (not args.disable_gpu_warning) and x_in.device.type == 'cuda':
             free_memory_mb = free_memory / (1024.0 * 1024.0)
             safe_memory_mb = 1536.0
             if free_memory_mb < safe_memory_mb:
                 _extracted_from_calc_cond_uncond_batch_46(free_memory_mb, safe_memory_mb)
+
         for i in range(1, len(to_batch_temp) + 1):
             batch_amount = to_batch_temp[:len(to_batch_temp) // i]
             input_shape = [len(batch_amount) * first_shape[0]] + list(first_shape)[1:]
@@ -200,13 +184,7 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
                 to_batch = batch_amount
                 break
 
-        input_x = []
-        mult = []
-        c = []
-        cond_or_uncond = []
-        area = []
-        control = None
-        patches = None
+        input_x, mult, c, cond_or_uncond, area, control, patches = [], [], [], [], [], None, None
         for x in to_batch:
             o = to_run.pop(x)
             p = o[0]
@@ -223,27 +201,17 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
         c = cond_cat(c)
         timestep_ = torch.cat([timestep] * batch_chunks)
 
-        transformer_options = {}
-        if 'transformer_options' in model_options:
-            transformer_options = model_options['transformer_options'].copy()
-
+        transformer_options = model_options.get('transformer_options', {}).copy()
         if patches is not None:
-            if "patches" in transformer_options:
-                cur_patches = transformer_options["patches"].copy()
-                for p in patches:
-                    cur_patches[p] = (
-                        cur_patches[p] + patches[p]
-                        if p in cur_patches
-                        else patches[p]
-                    )
-            else:
-                transformer_options["patches"] = patches
+            transformer_options["patches"] = {**transformer_options.get("patches", {}), **patches}
 
-        transformer_options["cond_or_uncond"] = cond_or_uncond[:]
-        transformer_options["sigmas"] = timestep
-
-        transformer_options["cond_mark"] = compute_cond_mark(cond_or_uncond=cond_or_uncond, sigmas=timestep)
-        transformer_options["cond_indices"], transformer_options["uncond_indices"] = compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)
+        transformer_options.update({
+            "cond_or_uncond": cond_or_uncond[:],
+            "sigmas": timestep,
+            "cond_mark": compute_cond_mark(cond_or_uncond=cond_or_uncond, sigmas=timestep),
+            "cond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[0],
+            "uncond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[1]
+        })
 
         c['transformer_options'] = transformer_options
 
@@ -252,7 +220,7 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
             while p is not None:
                 p.transformer_options = transformer_options
                 p = p.previous_controlnet
-            control_cond = c.copy()  # get_control may change items in this dict, so we need to copy it
+            control_cond = c.copy()
             c['control'] = control.get_control(input_x, timestep_, control_cond, len(cond_or_uncond))
             c['control_model'] = control
 

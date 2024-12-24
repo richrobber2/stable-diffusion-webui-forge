@@ -1,3 +1,5 @@
+from typing import Optional, List, Dict, Any, Generator, Callable, Union
+from dataclasses import dataclass
 import copy
 import itertools
 import torch
@@ -5,6 +7,12 @@ import torch
 from backend.modules.k_model import KModel
 from backend.patcher.base import ModelPatcher
 
+@dataclass
+class PatchConfig:
+    filename: str
+    patches: Dict[str, List[tuple]]
+    strength_patch: float
+    strength_model: float
 
 class UnetPatcher(ModelPatcher):
     @classmethod
@@ -24,7 +32,7 @@ class UnetPatcher(ModelPatcher):
         self.extra_model_patchers_during_sampling = []
         self.extra_concat_condition = None
 
-    def clone(self):
+    def clone(self) -> 'UnetPatcher':
         n = UnetPatcher(self.model, self.load_device, self.offload_device, self.size, self.current_device)
         n.lora_patches = self.lora_patches.copy()
         n.object_patches = self.object_patches.copy()
@@ -71,45 +79,33 @@ class UnetPatcher(ModelPatcher):
         self.controlnet_linked_list = cnet
         return
 
-    def list_controlnets(self):
-        results = []
+    def list_controlnets(self) -> Generator:
         pointer = self.controlnet_linked_list
         while pointer is not None:
-            results.append(pointer)
+            yield pointer
             pointer = pointer.previous_controlnet
-        return results
 
-    def append_model_option(self, k, v, ensure_uniqueness=False):
-        if k not in self.model_options:
-            self.model_options[k] = []
-
-        if ensure_uniqueness and v in self.model_options[k]:
-            return
-
-        self.model_options[k].append(v)
-        return
-
-    def append_transformer_option(self, k, v, ensure_uniqueness=False):
+    def _ensure_transformer_options(self) -> Dict:
         if 'transformer_options' not in self.model_options:
             self.model_options['transformer_options'] = {}
+        return self.model_options['transformer_options']
 
-        to = self.model_options['transformer_options']
+    def _append_option(self, option_dict: Dict, key: str, value: Any, ensure_uniqueness: bool = False) -> None:
+        if key not in option_dict:
+            option_dict[key] = []
+        if not ensure_uniqueness or value not in option_dict[key]:
+            option_dict[key].append(value)
 
-        if k not in to:
-            to[k] = []
+    def append_model_option(self, k: str, v: Any, ensure_uniqueness: bool = False) -> None:
+        self._append_option(self.model_options, k, v, ensure_uniqueness)
 
-        if ensure_uniqueness and v in to[k]:
-            return
+    def append_transformer_option(self, k: str, v: Any, ensure_uniqueness: bool = False) -> None:
+        to = self._ensure_transformer_options()
+        self._append_option(to, k, v, ensure_uniqueness)
 
-        to[k].append(v)
-        return
-
-    def set_transformer_option(self, k, v):
-        if 'transformer_options' not in self.model_options:
-            self.model_options['transformer_options'] = {}
-
-        self.model_options['transformer_options'][k] = v
-        return
+    def set_transformer_option(self, k: str, v: Any) -> None:
+        to = self._ensure_transformer_options()
+        to[k] = v
 
     def add_conditioning_modifier(self, modifier, ensure_uniqueness=False):
         self.append_model_option('conditioning_modifiers', modifier, ensure_uniqueness)
@@ -177,20 +173,21 @@ class UnetPatcher(ModelPatcher):
                 self.set_model_patch_replace(patch, target, block_name, number, transformer_index)
         return
 
-    def load_frozen_patcher(self, filename, state_dict, strength):
-        patch_dict = {}
-        for k, w in state_dict.items():
-            model_key, patch_type, weight_index = k.split('::')
-            if model_key not in patch_dict:
-                patch_dict[model_key] = {}
-            if patch_type not in patch_dict[model_key]:
-                patch_dict[model_key][patch_type] = [None] * 16
-            patch_dict[model_key][patch_type][int(weight_index)] = w
+    def load_frozen_patcher(self, filename: str, state_dict: Dict, strength: float) -> None:
+        patch_dict: Dict[str, Dict[str, List[Optional[torch.Tensor]]]] = {}
 
-        patch_flat = {}
-        for model_key, v in patch_dict.items():
-            for patch_type, weight_list in v.items():
-                patch_flat.setdefault(model_key, []).append((patch_type, weight_list))
+        # Process state dict into structured format
+        for key, weight in state_dict.items():
+            model_key, patch_type, weight_index = key.split('::')
+            patch_dict.setdefault(model_key, {}).setdefault(patch_type, [None] * 16)[int(weight_index)] = weight
 
-        self.add_patches(filename=filename, patches=patch_flat, strength_patch=float(strength), strength_model=1.0)
+        # Flatten patches for add_patches method
+        patches = {
+            model_key: list(patch_data.items())
+            for model_key, patch_data in patch_dict.items()
+        }
+
+        config = PatchConfig(filename=filename, patches=patches, 
+                           strength_patch=float(strength), strength_model=1.0)
+        self.add_patches(**vars(config))
         return

@@ -6,7 +6,6 @@ from backend.text_processing import parsing, emphasis
 from backend.text_processing.textual_inversion import EmbeddingDatabase
 from backend import memory_management
 
-
 PromptChunkFix = namedtuple('PromptChunkFix', ['offset', 'embedding'])
 last_extra_generation_params = {}
 
@@ -28,52 +27,45 @@ class CLIPEmbeddingForTextualInversion(torch.nn.Module):
 
     def forward(self, input_ids):
         batch_fixes = self.embeddings.fixes
-        self.embeddings.fixes = None
+        self.embeddings.fixes = None  # Reset fixes after use
 
         inputs_embeds = self.wrapped(input_ids)
 
-        if (
-            batch_fixes is None
-            or len(batch_fixes) == 0
-            or max(len(x) for x in batch_fixes) == 0
-        ):
+        if not batch_fixes or max(len(x) for x in batch_fixes) == 0:
             return inputs_embeds
 
+        # Process each sample in the batch
         vecs = []
         for fixes, tensor in zip(batch_fixes, inputs_embeds):
             for offset, embedding in fixes:
-                emb = embedding.vec[self.textual_inversion_key] if isinstance(embedding.vec, dict) else embedding.vec
-                emb = emb.to(inputs_embeds)
+                emb = embedding.vec.get(self.textual_inversion_key, embedding.vec) \
+                    if isinstance(embedding.vec, dict) else embedding.vec
+                emb = emb.to(inputs_embeds.device, dtype=inputs_embeds.dtype)
                 emb_len = min(tensor.shape[0] - offset - 1, emb.shape[0])
-                tensor = torch.cat(
-                    [
-                        tensor[: offset + 1],
-                        emb[:emb_len],
-                        tensor[offset + 1 + emb_len :],
-                    ]
-                ).to(dtype=inputs_embeds.dtype)
-
+                # Efficiently replace tensor slices
+                tensor = torch.cat([
+                    tensor[:offset + 1],
+                    emb[:emb_len],
+                    tensor[offset + 1 + emb_len:]
+                ], dim=0)
             vecs.append(tensor)
 
-        return torch.stack(vecs)
+        return torch.stack(vecs, dim=0)
 
 
 class ClassicTextProcessingEngine:
     def __init__(
-            self, text_encoder, tokenizer, chunk_length=75,
-            embedding_dir=None, embedding_key='clip_l', embedding_expected_shape=768, emphasis_name="Original",
-            text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True
+        self, text_encoder, tokenizer, chunk_length=75,
+        embedding_dir=None, embedding_key='clip_l', embedding_expected_shape=768,
+        emphasis_name="Original", text_projection=False, minimal_clip_skip=1,
+        clip_skip=1, return_pooled=False, final_layer_norm=True
     ):
-        super().__init__()
-
         self.embeddings = EmbeddingDatabase(tokenizer, embedding_expected_shape)
 
         if isinstance(embedding_dir, str):
-            self.embeddings.add_embedding_dir(embedding_dir)
-            self.embeddings.load_textual_inversion_embeddings()
+            self._load_embeddings(embedding_dir)
 
         self.embedding_key = embedding_key
-
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
 
@@ -90,69 +82,85 @@ class ClassicTextProcessingEngine:
         self.id_end = self.tokenizer.eos_token_id
         self.id_pad = self.tokenizer.pad_token_id
 
-        model_embeddings = text_encoder.transformer.text_model.embeddings
-        model_embeddings.token_embedding = CLIPEmbeddingForTextualInversion(model_embeddings.token_embedding, self.embeddings, textual_inversion_key=embedding_key)
+        # Replace token embedding with custom embedding layer
+        self._replace_token_embedding()
 
         vocab = self.tokenizer.get_vocab()
-
         self.comma_token = vocab.get(',</w>', None)
+        self.token_mults = self._compute_token_multipliers(vocab)
 
-        self.token_mults = {}
+    def _load_embeddings(self, embedding_dir):
+        """Helper function to load embeddings from directory."""
+        self.embeddings.add_embedding_dir(embedding_dir)
+        self.embeddings.load_textual_inversion_embeddings()
 
-        tokens_with_parens = [(k, v) for k, v in vocab.items() if '(' in k or ')' in k or '[' in k or ']' in k]
-        for text, ident in tokens_with_parens:
+    def _replace_token_embedding(self):
+        """Helper function to replace token embedding with custom embedding layer."""
+        model_embeddings = self.text_encoder.transformer.text_model.embeddings
+        model_embeddings.token_embedding = CLIPEmbeddingForTextualInversion(
+            model_embeddings.token_embedding,
+            self.embeddings,
+            textual_inversion_key=self.embedding_key
+        )
+
+    def _compute_token_multipliers(self, vocab):
+        """Helper function to compute token multipliers for emphasis."""
+        token_mults = {}
+        for text, ident in vocab.items():
             mult = 1.0
             for c in text:
-                if c in ['[', ')']:
-                    mult /= 1.1
-                elif c in [']', '(']:
+                if c == '(':
                     mult *= 1.1
+                elif c == ')':
+                    mult /= 1.1
             if mult != 1.0:
-                self.token_mults[ident] = mult
+                token_mults[ident] = mult
+        return token_mults
 
     def empty_chunk(self):
+        """Create an empty prompt chunk with padding."""
         chunk = PromptChunk()
         chunk.tokens = [self.id_start] + [self.id_end] * (self.chunk_length + 1)
         chunk.multipliers = [1.0] * (self.chunk_length + 2)
         return chunk
 
     def get_target_prompt_token_count(self, token_count):
+        """Calculate the target prompt token count for batching."""
         return math.ceil(max(token_count, 1) / self.chunk_length) * self.chunk_length
 
     def tokenize(self, texts):
-        return self.tokenizer(texts, truncation=False, add_special_tokens=False)[
-            "input_ids"
-        ]
+        """Tokenize a list of texts without truncation."""
+        return self.tokenizer(texts, truncation=False, add_special_tokens=False)["input_ids"]
 
     def encode_with_transformers(self, tokens):
+        """Encode tokens using the transformer model."""
         target_device = memory_management.text_encoder_device()
 
-        self.text_encoder.transformer.text_model.embeddings.position_ids = self.text_encoder.transformer.text_model.embeddings.position_ids.to(device=target_device)
-        self.text_encoder.transformer.text_model.embeddings.position_embedding = self.text_encoder.transformer.text_model.embeddings.position_embedding.to(dtype=torch.float32)
-        self.text_encoder.transformer.text_model.embeddings.token_embedding = self.text_encoder.transformer.text_model.embeddings.token_embedding.to(dtype=torch.float32)
+        # Ensure embeddings are on the correct device and dtype
+        embeddings = self.text_encoder.transformer.text_model.embeddings
+        embeddings.to(device=target_device, dtype=torch.float32)
 
         tokens = tokens.to(target_device)
 
         outputs = self.text_encoder.transformer(tokens, output_hidden_states=True)
 
-        layer_id = - max(self.clip_skip, self.minimal_clip_skip)
-        # Get hidden states and modify in-place since we don't need the original during inference
+        layer_id = -max(self.clip_skip, self.minimal_clip_skip)
         z = outputs.hidden_states[layer_id]
 
         if self.final_layer_norm:
-            # Perform layer norm in-place as we don't need the pre-normalized values
-            self.text_encoder.transformer.text_model.final_layer_norm(z, inplace=True)
+            # Apply final layer norm
+            z = self.text_encoder.transformer.text_model.final_layer_norm(z)
 
         if self.return_pooled:
             pooled_output = outputs.pooler_output
-
             if self.text_projection:
                 pooled_output = self.text_encoder.transformer.text_projection(pooled_output)
-
             z.pooled = pooled_output
+
         return z
 
     def tokenize_line(self, line):
+        """Tokenize a single line of text with attention to emphasis and embeddings."""
         parsed = parsing.parse_prompt_attention(line)
         tokenized = self.tokenize([text for text, _ in parsed])
 
@@ -161,80 +169,83 @@ class ClassicTextProcessingEngine:
         token_count = 0
         last_comma = -1
 
-        def next_chunk(is_last=False):
-            nonlocal token_count, last_comma, chunk
-
-            token_count += len(chunk.tokens) if is_last else self.chunk_length
-            # Calculate padding more efficiently
-            to_add = max(0, self.chunk_length - len(chunk.tokens))
-            if to_add > 0:
-                chunk.tokens.extend([self.id_end] * to_add)
-                chunk.multipliers.extend([1.0] * to_add)
-
-            # Wrap chunk with start/end tokens
-            chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
-            chunk.multipliers = [1.0] + chunk.multipliers + [1.0]
-
-            last_comma = -1
-            chunks.append(chunk)
-            chunk = PromptChunk()
-
-        for tokens, (text, weight) in zip(tokenized, parsed):
+        for tokens_list, (text, weight) in zip(tokenized, parsed):
             if text == 'BREAK' and weight == -1:
-                next_chunk()
+                self._finalize_chunk(chunk, chunks)
+                chunk = PromptChunk()
                 continue
 
             position = 0
+            tokens = tokens_list
             while position < len(tokens):
                 token = tokens[position]
 
-                # Optimize comma handling
                 if token == self.comma_token:
                     last_comma = len(chunk.tokens)
-                elif len(chunk.tokens) == self.chunk_length and last_comma != -1:
-                    # More efficient chunk splitting at comma
-                    if len(chunk.tokens) - last_comma <= 20:  # Using constant for clarity
-                        break_location = last_comma + 1
-
-                        # Optimize token relocation
-                        reloc_tokens = chunk.tokens[break_location:]
-                        reloc_mults = chunk.multipliers[break_location:]
-
-                        del chunk.tokens[break_location:]
-                        del chunk.multipliers[break_location:]
-
-                        next_chunk()
-                        chunk.tokens = reloc_tokens
-                        chunk.multipliers = reloc_mults
 
                 if len(chunk.tokens) == self.chunk_length:
-                    next_chunk()
+                    if last_comma != -1 and len(chunk.tokens) - last_comma <= 20:
+                        # Split chunk at last comma
+                        break_location = last_comma + 1
+                        self._split_chunk_at(chunk, break_location, chunks)
+                        chunk = PromptChunk()
+                    else:
+                        self._finalize_chunk(chunk, chunks)
+                        chunk = PromptChunk()
+                    last_comma = -1
 
                 # Handle embeddings
                 embedding, embedding_length = self.embeddings.find_embedding_at_position(tokens, position)
-                if embedding is None:
+                if embedding is not None:
+                    emb_len = int(embedding.vectors)
+                    if len(chunk.tokens) + emb_len > self.chunk_length:
+                        self._finalize_chunk(chunk, chunks)
+                        chunk = PromptChunk()
+                    chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
+                    chunk.tokens.extend([0] * emb_len)
+                    chunk.multipliers.extend([weight] * emb_len)
+                    position += embedding_length
+                else:
                     chunk.tokens.append(token)
                     chunk.multipliers.append(weight)
                     position += 1
-                    continue
-
-                emb_len = int(embedding.vectors)
-                if len(chunk.tokens) + emb_len > self.chunk_length:
-                    next_chunk()
-
-                chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
-                chunk.tokens.extend([0] * emb_len)
-                chunk.multipliers.extend([weight] * emb_len)
-                position += embedding_length
 
         if chunk.tokens or not chunks:
-            next_chunk(is_last=True)
+            self._finalize_chunk(chunk, chunks, is_last=True)
 
+        token_count = sum(len(c.tokens) - 2 for c in chunks)  # Exclude start/end tokens
         return chunks, token_count
 
-    def process_texts(self, texts):
-        token_count = 0
+    def _finalize_chunk(self, chunk, chunks, is_last=False):
+        """Helper function to finalize and pad a chunk."""
+        # Pad chunk tokens and multipliers
+        to_add = max(0, self.chunk_length - len(chunk.tokens))
+        if to_add > 0:
+            chunk.tokens.extend([self.id_end] * to_add)
+            chunk.multipliers.extend([1.0] * to_add)
+        # Add start and end tokens
+        chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
+        chunk.multipliers = [1.0] + chunk.multipliers + [1.0]
+        chunks.append(chunk)
 
+    def _split_chunk_at(self, chunk, break_location, chunks):
+        """Helper function to split a chunk at a specified location."""
+        # Split tokens and multipliers
+        reloc_tokens = chunk.tokens[break_location:]
+        reloc_mults = chunk.multipliers[break_location:]
+        chunk.tokens = chunk.tokens[:break_location]
+        chunk.multipliers = chunk.multipliers[:break_location]
+        # Finalize the current chunk
+        self._finalize_chunk(chunk, chunks)
+        # Start a new chunk with the relocated tokens
+        new_chunk = PromptChunk()
+        new_chunk.tokens = reloc_tokens
+        new_chunk.multipliers = reloc_mults
+        chunks.append(new_chunk)
+
+    def process_texts(self, texts):
+        """Process a list of texts into tokenized chunks."""
+        token_count = 0
         cache = {}
         batch_chunks = []
         for line in texts:
@@ -243,27 +254,25 @@ class ClassicTextProcessingEngine:
             else:
                 chunks, current_token_count = self.tokenize_line(line)
                 token_count = max(current_token_count, token_count)
-
                 cache[line] = chunks
-
             batch_chunks.append(chunks)
-
         return batch_chunks, token_count
 
     def __call__(self, texts):
         batch_chunks, token_count = self.process_texts(texts)
 
         used_embeddings = {}
-        chunk_count = max(len(x) for x in batch_chunks)
+        chunk_count = max(len(chunks) for chunks in batch_chunks)
 
         zs = []
         for i in range(chunk_count):
             batch_chunk = [chunks[i] if i < len(chunks) else self.empty_chunk() for chunks in batch_chunks]
 
-            tokens = [x.tokens for x in batch_chunk]
-            multipliers = [x.multipliers for x in batch_chunk]
-            self.embeddings.fixes = [x.fixes for x in batch_chunk]
+            tokens = [chunk.tokens for chunk in batch_chunk]
+            multipliers = [chunk.multipliers for chunk in batch_chunk]
+            self.embeddings.fixes = [chunk.fixes for chunk in batch_chunk]
 
+            # Collect used embeddings
             for fixes in self.embeddings.fixes:
                 for _position, embedding in fixes:
                     used_embeddings[embedding.name] = embedding
@@ -271,42 +280,50 @@ class ClassicTextProcessingEngine:
             z = self.process_tokens(tokens, multipliers)
             zs.append(z)
 
-        global last_extra_generation_params
-
-        if used_embeddings:
-            names = []
-
-            for name in used_embeddings:
-                print(f'[Textual Inversion] Used Embedding [{name}] in CLIP of [{self.embedding_key}]')
-                names.append(name.replace(":", "").replace(",", ""))
-
-            if "TI" in last_extra_generation_params:
-                last_extra_generation_params["TI"] += ", " + ", ".join(names)
-            else:
-                last_extra_generation_params["TI"] = ", ".join(names)
-
-        if any(x for x in texts if "(" in x or "[" in x) and self.emphasis.name != "Original":
-            last_extra_generation_params["Emphasis"] = self.emphasis.name
+        # Update global parameters for used embeddings
+        self._update_last_extra_generation_params(used_embeddings, texts)
 
         if self.return_pooled:
             return torch.hstack(zs), zs[0].pooled
         else:
             return torch.hstack(zs)
 
-    def process_tokens(self, remade_batch_tokens, batch_multipliers):
-        tokens = torch.asarray(remade_batch_tokens)
+    def _update_last_extra_generation_params(self, used_embeddings, texts):
+        """Helper function to update last generation parameters with used embeddings."""
+        global last_extra_generation_params
 
-        if self.id_end != self.id_pad:
-            for batch_pos in range(len(remade_batch_tokens)):
-                index = remade_batch_tokens[batch_pos].index(self.id_end)
-                tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
+        if used_embeddings:
+            names = []
+            for name in used_embeddings:
+                print(f'[Textual Inversion] Used Embedding [{name}] in CLIP of [{self.embedding_key}]')
+                names.append(name.replace(":", "").replace(",", ""))
+            if "TI" in last_extra_generation_params:
+                last_extra_generation_params["TI"] += ", " + ", ".join(names)
+            else:
+                last_extra_generation_params["TI"] = ", ".join(names)
+
+        if any("(" in text or "[" in text for text in texts) and self.emphasis.name != "Original":
+            last_extra_generation_params["Emphasis"] = self.emphasis.name
+
+    def process_tokens(self, tokens_list, multipliers_list):
+        """Process tokens and multipliers through the model."""
+        tokens = torch.tensor(tokens_list, dtype=torch.long)
+
+        # Replace padding tokens after end token
+        for batch_idx, token_seq in enumerate(tokens):
+            try:
+                end_idx = token_seq.tolist().index(self.id_end)
+                tokens[batch_idx, end_idx + 1:] = self.id_pad
+            except ValueError:
+                pass  # id_end not found; no action needed
 
         z = self.encode_with_transformers(tokens)
 
         pooled = getattr(z, 'pooled', None)
 
-        self.emphasis.tokens = remade_batch_tokens
-        self.emphasis.multipliers = torch.asarray(batch_multipliers).to(z)
+        # Apply emphasis
+        self.emphasis.tokens = tokens_list
+        self.emphasis.multipliers = torch.tensor(multipliers_list, device=z.device, dtype=z.dtype)
         self.emphasis.z = z
         self.emphasis.after_transformers()
         z = self.emphasis.z
@@ -315,3 +332,9 @@ class ClassicTextProcessingEngine:
             z.pooled = pooled
 
         return z
+
+    def get_prompt_lengths_on_ui(self, prompt):
+        """Get the token count and target token count for a given prompt."""
+        _, token_count = self.process_texts([prompt])
+        target_count = self.get_target_prompt_token_count(token_count)
+        return token_count, target_count

@@ -35,6 +35,9 @@ class Task:
             print(e)
             self.exception = e
             last_exception = e
+        finally:
+            with lock:
+                finished_list.append(self)
 
 
 def loop():
@@ -46,9 +49,6 @@ def loop():
                 task = waiting_list.pop(0)
 
             task.work()
-
-            with lock:
-                finished_list.append(task)
 
 
 def async_run(func, *args, **kwargs):
@@ -66,10 +66,11 @@ def run_and_wait_result(func, *args, **kwargs):
     while True:
         time.sleep(0.01)
         finished_task = None
-        for t in finished_list.copy():  # thread safe shallow copy without needing a lock
-            if t.task_id == current_id:
-                finished_task = t
-                break
+        with lock:
+            for t in finished_list:
+                if t.task_id == current_id:
+                    finished_task = t
+                    break
         if finished_task is not None:
             with lock:
                 finished_list.remove(finished_task)

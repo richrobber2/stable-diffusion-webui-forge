@@ -31,13 +31,14 @@ def load_torch_file(ckpt, safe_load=False, device=None):
             sd[str(tensor.name)] = ParameterGGUF(tensor)
     else:
         if safe_load:
-            if not 'weights_only' in torch.load.__code__.co_varnames:
-                print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
-                safe_load = False
-        if safe_load:
-            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+            try:
+                pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+            except TypeError:
+                print("Warning: torch.load doesn't support weights_only on this PyTorch version, loading unsafely.")
+                pl_sd = torch.load(ckpt, map_location=device, pickle_module=backend.misc.checkpoint_pickle)
         else:
             pl_sd = torch.load(ckpt, map_location=device, pickle_module=backend.misc.checkpoint_pickle)
+        
         if "global_step" in pl_sd:
             print(f"Global Step: {pl_sd['global_step']}")
         if "state_dict" in pl_sd:

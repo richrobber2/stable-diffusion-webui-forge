@@ -34,7 +34,7 @@ MODEL = os.getenv(
 )
 
 # torch.backends.cudnn.deterministic = True
-# torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = False
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

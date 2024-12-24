@@ -67,14 +67,7 @@ class CompVisSampler(sd_samplers_common.Sampler):
 
         steps += 1 if discard_next_to_last_sigma else 0
 
-        return torch.clip(
-            torch.asarray(
-                list(range(0, 1000, 1000 // steps)), device=devices.device
-            )
-            + 1,
-            0,
-            999,
-        )
+        return torch.linspace(0, 999, steps, device=devices.device).long()
 
     def sample_img2img(self, p, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
         unet_patcher = self._extracted_from_sample_2(x)

@@ -16,10 +16,8 @@ function showModal(event) {
     lb.style.display = "flex";
     lb.focus();
 
-    const tabTxt2Img = gradioApp().getElementById("tab_txt2img");
-    const tabImg2Img = gradioApp().getElementById("tab_img2img");
     // show the save button in modal only on txt2img or img2img tabs
-    if (tabTxt2Img.style.display != "none" || tabImg2Img.style.display != "none") {
+    if (isInTxt2ImgOrImg2Img()) {
         gradioApp().getElementById("modal_save").style.display = "inline";
     } else {
         gradioApp().getElementById("modal_save").style.display = "none";
@@ -72,13 +70,11 @@ function modalImageSwitch(offset) {
 }
 
 function saveImage() {
-    const tabTxt2Img = gradioApp().getElementById("tab_txt2img");
-    const tabImg2Img = gradioApp().getElementById("tab_img2img");
     const saveTxt2Img = "save_txt2img";
     const saveImg2Img = "save_img2img";
-    if (tabTxt2Img.style.display != "none") {
+    if (isInTxt2ImgOrImg2Img()) {
         gradioApp().getElementById(saveTxt2Img).click();
-    } else if (tabImg2Img.style.display != "none") {
+    } else if (isInTxt2ImgOrImg2Img()) {
         gradioApp().getElementById(saveImg2Img).click();
     } else {
         console.error("missing implementation for saving modal of this type");
@@ -174,6 +170,12 @@ function modalTileImageToggle(event) {
     }
 
     event.stopPropagation();
+}
+
+function isInTxt2ImgOrImg2Img() {
+    const tabTxt2Img = gradioApp().getElementById("tab_txt2img");
+    const tabImg2Img = gradioApp().getElementById("tab_img2img");
+    return tabTxt2Img.style.display !== "none" || tabImg2Img.style.display !== "none";
 }
 
 onAfterUiUpdate(function() {

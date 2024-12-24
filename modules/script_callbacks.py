@@ -250,137 +250,86 @@ def clear_callbacks():
     ordered_callbacks_map.clear()
 
 
-def app_started_callback(demo: Optional[Blocks], app: FastAPI):
-    for c in ordered_callbacks('app_started'):
+def call_callbacks(category, *args, **kwargs):
+    """Helper to call callbacks for a given category."""
+    for c in ordered_callbacks(category):
         try:
-            c.callback(demo, app)
-            timer.startup_timer.record(os.path.basename(c.script))
+            c.callback(*args, **kwargs)
         except Exception:
-            report_exception(c, 'app_started_callback')
+            report_exception(c, f'{category}_callback')
+
+
+def app_started_callback(demo: Optional[Blocks], app: FastAPI):
+    call_callbacks('app_started', demo, app)
 
 
 def app_reload_callback():
-    for c in ordered_callbacks('on_reload'):
-        try:
-            c.callback()
-        except Exception:
-            report_exception(c, 'callbacks_on_reload')
+    call_callbacks('on_reload')
 
 
 def model_loaded_callback(sd_model):
-    for c in ordered_callbacks('model_loaded'):
-        try:
-            c.callback(sd_model)
-        except Exception:
-            report_exception(c, 'model_loaded_callback')
+    call_callbacks('model_loaded', sd_model)
 
 
 def ui_tabs_callback():
     res = []
-
-    for c in ordered_callbacks('ui_tabs'):
-        try:
-            res += c.callback() or []
-        except Exception:
-            report_exception(c, 'ui_tabs_callback')
-
+    def wrapper():
+        for c in ordered_callbacks('ui_tabs'):
+            try:
+                r = c.callback() or []
+                res.extend(r)
+            except Exception:
+                report_exception(c, 'ui_tabs_callback')
+    wrapper()
     return res
 
 
 def ui_train_tabs_callback(params: UiTrainTabParams):
-    for c in ordered_callbacks('ui_train_tabs'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'callbacks_ui_train_tabs')
+    call_callbacks('ui_train_tabs', params=params)
 
 
 def ui_settings_callback():
-    for c in ordered_callbacks('ui_settings'):
-        try:
-            c.callback()
-        except Exception:
-            report_exception(c, 'ui_settings_callback')
+    call_callbacks('ui_settings')
 
 
 def before_image_saved_callback(params: ImageSaveParams):
-    for c in ordered_callbacks('before_image_saved'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'before_image_saved_callback')
+    call_callbacks('before_image_saved', params=params)
 
 
 def image_saved_callback(params: ImageSaveParams):
-    for c in ordered_callbacks('image_saved'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'image_saved_callback')
+    call_callbacks('image_saved', params=params)
 
 
 def extra_noise_callback(params: ExtraNoiseParams):
-    for c in ordered_callbacks('extra_noise'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'callbacks_extra_noise')
+    call_callbacks('extra_noise', params=params)
 
 
 def cfg_denoiser_callback(params: CFGDenoiserParams):
-    for c in ordered_callbacks('cfg_denoiser'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'cfg_denoiser_callback')
+    call_callbacks('cfg_denoiser', params=params)
 
 
 def cfg_denoised_callback(params: CFGDenoisedParams):
-    for c in ordered_callbacks('cfg_denoised'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'cfg_denoised_callback')
+    call_callbacks('cfg_denoised', params=params)
 
 
 def cfg_after_cfg_callback(params: AfterCFGCallbackParams):
-    for c in ordered_callbacks('cfg_after_cfg'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'cfg_after_cfg_callback')
+    call_callbacks('cfg_after_cfg', params=params)
 
 
 def before_component_callback(component, **kwargs):
-    for c in ordered_callbacks('before_component'):
-        try:
-            c.callback(component, **kwargs)
-        except Exception:
-            report_exception(c, 'before_component_callback')
+    call_callbacks('before_component', component, **kwargs)
 
 
 def after_component_callback(component, **kwargs):
-    for c in ordered_callbacks('after_component'):
-        try:
-            c.callback(component, **kwargs)
-        except Exception:
-            report_exception(c, 'after_component_callback')
+    call_callbacks('after_component', component, **kwargs)
 
 
 def image_grid_callback(params: ImageGridLoopParams):
-    for c in ordered_callbacks('image_grid'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'image_grid')
+    call_callbacks('image_grid', params=params)
 
 
 def infotext_pasted_callback(infotext: str, params: dict[str, Any]):
-    for c in ordered_callbacks('infotext_pasted'):
-        try:
-            c.callback(infotext, params)
-        except Exception:
-            report_exception(c, 'infotext_pasted')
+    call_callbacks('infotext_pasted', infotext, params)
 
 
 def script_unloaded_callback():
@@ -401,7 +350,6 @@ def before_ui_callback():
 
 def list_optimizers_callback():
     res = []
-
     for c in ordered_callbacks('list_optimizers'):
         try:
             c.callback(res)
@@ -413,7 +361,6 @@ def list_optimizers_callback():
 
 def list_unets_callback():
     res = []
-
     for c in ordered_callbacks('list_unets'):
         try:
             c.callback(res)
@@ -424,11 +371,7 @@ def list_unets_callback():
 
 
 def before_token_counter_callback(params: BeforeTokenCounterParams):
-    for c in ordered_callbacks('before_token_counter'):
-        try:
-            c.callback(params)
-        except Exception:
-            report_exception(c, 'before_token_counter')
+    call_callbacks('before_token_counter', params=params)
 
 
 def remove_current_script_callbacks():

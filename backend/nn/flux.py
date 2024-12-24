@@ -18,21 +18,16 @@ def attention(q, k, v, pe):
 
 
 def rope(pos, dim, theta):
-    if pos.device.type in ["mps", "xpu"]:
-        scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
-    else:
-        scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
+    scale_dtype = torch.float32 if pos.device.type in ["mps", "xpu"] else torch.float64
+    scale = torch.arange(0, dim, 2, dtype=scale_dtype, device=pos.device) / dim
     omega = 1.0 / (theta ** scale)
 
-    # out = torch.einsum("...n,d->...nd", pos, omega)
     out = pos.unsqueeze(-1) * omega.unsqueeze(0)
-
     cos_out = torch.cos(out)
     sin_out = torch.sin(out)
     out = torch.stack([cos_out, -sin_out, sin_out, cos_out], dim=-1)
     del cos_out, sin_out
 
-    # out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)
     b, n, d, _ = out.shape
     out = out.view(b, n, d, 2, 2)
 
