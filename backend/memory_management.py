@@ -15,13 +15,28 @@ cpu = torch.device('cpu')
 GIGABYTE = 1024 * 1024 * 1024
 benchmarking_mode = False
 
-def check_reliable_info():
+def check_reliable_info() -> None:
+    """Check if CUDA device reports reliable memory information."""
     global benchmarking_mode
     try:
         props = torch.cuda.get_device_properties("cuda")
         if props.total_memory <= 0:
+            print(f"Warning: CUDA device '{props.name}' reports invalid total memory: {props.total_memory}.")
+            print("Falling back to benchmarking mode for memory management.")
             benchmarking_mode = True
-    except:
+            return
+        
+        # Additional sanity check for very low reported memory
+        if props.total_memory < 1024:  # Less than 1MB reported
+            print(f"Warning: CUDA device '{props.name}' reports suspiciously low memory: {props.total_memory / 1024:.2f} MB")
+            print("Falling back to benchmarking mode for memory management.")
+            benchmarking_mode = True
+            return
+            
+        benchmarking_mode = False
+    except Exception as e:
+        print(f"Warning: Could not query CUDA device properties: {str(e)}")
+        print("Falling back to benchmarking mode for memory management.")
         benchmarking_mode = True
 
 
@@ -133,21 +148,49 @@ def get_mem_stats(dev):
 
 
 def get_total_memory(dev=None, torch_total_too=False):
-    # Now leverage get_mem_stats for consistency
+    """Get total available memory across devices.
+    
+    Args:
+        dev: Target device. If None, uses first available CUDA device or CPU
+        torch_total_too: Whether to return torch-managed memory too
+    
+    Returns:
+        Total memory available (and optionally torch-managed memory)
+    """
+    if dev is None:
+        if directml_enabled:
+            dev = directml_device
+        elif is_intel_xpu():
+            dev = torch.device("xpu:0")
+        elif torch.cuda.is_available():
+            dev = torch.device("cuda:0")
+        else:
+            dev = torch.device("cpu")
+
+    # Handle different device types
+    if hasattr(dev, 'type'):
+        if dev.type == "cuda":
+            # Multi-GPU aggregation for CUDA
+            total_memory = 0
+            device_count = torch.cuda.device_count()
+            for i in range(device_count):
+                d = torch.device(f"cuda:{i}")
+                stats = get_mem_stats(d)
+                mem = stats['mem_reserved'] if torch_total_too else stats['mem_total']
+                total_memory += mem
+            return total_memory
+        elif dev.type == "xpu":
+            # Single XPU device handling
+            stats = get_mem_stats(dev)
+            return stats['mem_reserved'] if torch_total_too else stats['mem_total']
+        elif dev.type in ["cpu", "mps"]:
+            # CPU/MPS memory handling
+            stats = get_mem_stats(dev)
+            return stats['mem_total']
+    
+    # Fallback for other devices (including directml)
     stats = get_mem_stats(dev)
-    mem_total = stats['mem_total']
-    mem_reserved = stats['mem_reserved']
-
-    if hasattr(dev, 'type') and dev.type in ['cpu', 'mps']:
-        mem_total_torch = mem_total
-    elif directml_enabled:
-        mem_total_torch = mem_total
-    elif is_intel_xpu():
-        mem_total_torch = mem_reserved
-    else:
-        mem_total_torch = mem_reserved
-
-    return (mem_total, mem_total_torch) if torch_total_too else mem_total
+    return stats['mem_reserved'] if torch_total_too else stats['mem_total']
 
 
 total_vram = get_total_memory(get_torch_device()) / (1024 * 1024)
