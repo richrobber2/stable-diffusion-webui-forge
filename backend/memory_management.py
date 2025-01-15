@@ -80,12 +80,12 @@ if args.directml is not None:
         directml_device = torch_directml.device(device_index)
     print(f"Using DirectML with device: {torch_directml.device_name(device_index)}")
 
-try:
+from contextlib import suppress
+
+with suppress(ImportError):
     import intel_extension_for_pytorch as ipex
     if torch.xpu.is_available():
         xpu_available = True
-except ImportError:
-    pass
 
 try:
     if torch.backends.mps.is_available():
@@ -360,8 +360,7 @@ def state_dict_dtype(state_dict):
     for tensor in state_dict.values():
         dtype_counts[tensor.dtype] = dtype_counts.get(tensor.dtype, 0) + 1
 
-    major_dtype = max(dtype_counts, key=dtype_counts.get)
-    return major_dtype
+    return max(dtype_counts, key=dtype_counts.get)
 
 
 def bake_gguf_model(model):
@@ -432,26 +431,44 @@ def build_module_profile(model, model_gpu_memory_when_using_cpu_swap):
     gpu_modules_only_extras = []
     mem_counter = 0
 
-    for m in legacy_modules.copy():
+    for m in legacy_modules:
         gpu_modules.append(m)
-        legacy_modules.remove(m)
         mem_counter += m.total_mem
 
-    for m in sorted(all_modules, key=lambda x: x.extra_mem).copy():
+    legacy_modules.clear()
+
+    for m in sorted(all_modules, key=lambda x: x.extra_mem):
         if mem_counter + m.extra_mem < model_gpu_memory_when_using_cpu_swap:
             gpu_modules_only_extras.append(m)
-            all_modules.remove(m)
             mem_counter += m.extra_mem
+
+    all_modules = [m for m in all_modules if m not in gpu_modules_only_extras]
 
     cpu_modules = all_modules
 
-    for m in sorted(gpu_modules_only_extras, key=lambda x: x.weight_mem).copy():
+    for m in sorted(gpu_modules_only_extras, key=lambda x: x.weight_mem):
         if mem_counter + m.weight_mem < model_gpu_memory_when_using_cpu_swap:
             gpu_modules.append(m)
-            gpu_modules_only_extras.remove(m)
             mem_counter += m.weight_mem
 
+    gpu_modules_only_extras = [m for m in gpu_modules_only_extras if m not in gpu_modules]
+
     return gpu_modules, gpu_modules_only_extras, cpu_modules
+
+
+class ModelReference:
+    """Tracks model references and usage status."""
+    def __init__(self, model):
+        self.model = model
+        self.last_used = time.time()
+        self.in_use = False
+
+    def mark_used(self):
+        self.last_used = time.time()
+        self.in_use = True
+
+    def mark_unused(self):
+        self.in_use = False
 
 
 class LoadedModel:
@@ -462,6 +479,7 @@ class LoadedModel:
         self.inclusive_memory = 0
         self.exclusive_memory = 0
         self.load_attempts = 0  # Track load attempts for adaptive strategies
+        self.reference = ModelReference(model)
 
     def compute_inclusive_exclusive_memory(self):
         self.inclusive_memory = module_size(self.model.model, include_device=self.device)
@@ -610,47 +628,89 @@ def unload_model_clones(model):
         current_loaded_models.pop(i).model_unload(avoid_model_moving=True)
 
 
+def _unload_single_model(model_entry, avoid_moving=True):
+    """Safely unload a single model and perform cleanup."""
+    try:
+        model_entry.model_unload(avoid_model_moving=avoid_moving)
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to unload model: {e}")
+        return False
+
+
+def _check_memory_threshold(device, required_memory):
+    """Check if available memory meets the required threshold."""
+    if device == torch.device("cpu"):
+        return True
+    free_memory = get_free_memory(device)
+    return free_memory >= required_memory
+
+
 def free_memory(memory_required, device, keep_loaded=None, free_all=False):
-    global benchmarking_mode
+    """
+    Free device memory by unloading models based on priority and requirements.
+    
+    Args:
+        memory_required: Amount of memory to free in bytes
+        device: Target device to free memory from
+        keep_loaded: List of models to preserve
+        free_all: Whether to attempt freeing all possible memory
+    """
     if keep_loaded is None:
         keep_loaded = []
 
-    # Unload models with no references
+    print(f"[Memory Management] {'Full cleanup' if free_all else f'Freeing {memory_required / (1024 * 1024):.2f} MB'} "
+          f"on {device} (keeping {len(keep_loaded)} models)")
+
+    # Track if any models were unloaded
+    unloaded_count = 0
+
+    # First pass: Unload models with no external references
     for i in range(len(current_loaded_models) - 1, -1, -1):
-        if sys.getrefcount(current_loaded_models[i].model) <= 2:
-            current_loaded_models.pop(i).model_unload(avoid_model_moving=True)
+        model_entry = current_loaded_models[i]
+        if not model_entry.reference.in_use and model_entry not in keep_loaded and _unload_single_model(model_entry):
+            current_loaded_models.pop(i)
+            unloaded_count += 1
 
-    if free_all:
-        memory_required = 1e30
-        print(f"[Unload] Freeing all memory on {device} with {len(keep_loaded)} models to keep...", end="")
-    else:
-        print(f"[Unload] Trying to free {memory_required / (1024 * 1024):.2f} MB for {device} with {len(keep_loaded)} models kept...", end="")
+    # Check if we've freed enough memory
+    if not free_all and _check_memory_threshold(device, memory_required):
+        if unloaded_count > 0:
+            soft_empty_cache()
+        return
 
+    # Second pass: Unload models based on last usage time and device
     offload_everything = ALWAYS_VRAM_OFFLOAD or vram_state == VRAMState.NO_VRAM
-    unloaded_model = False
-    for i in range(len(current_loaded_models) - 1, -1, -1):
-        if not offload_everything:
-            free_memory_now = get_free_memory(device)
-            print(f" Current free memory: {free_memory_now / (1024 * 1024):.2f} MB ... ", end="")
-            if free_memory_now > memory_required:
-                break
-        shift_model = current_loaded_models[i]
-        if shift_model.device == device and shift_model not in keep_loaded:
-            m = current_loaded_models.pop(i)
-            print(f" Unloading model {m.model.model.__class__.__name__}...", end="")
-            m.model_unload()
-            del m
-            unloaded_model = True
+    models_to_unload = []
 
-    if unloaded_model:
+    for i in range(len(current_loaded_models) - 1, -1, -1):
+        if not offload_everything and _check_memory_threshold(device, memory_required):
+            break
+
+        model_entry = current_loaded_models[i]
+        if (model_entry.device == device and 
+            model_entry not in keep_loaded and 
+            not model_entry.reference.in_use):
+            models_to_unload.append((i, model_entry))
+
+    # Sort by last used time if not freeing all
+    if not free_all:
+        models_to_unload.sort(key=lambda x: x[1].reference.last_used)
+
+    # Unload models
+    for i, model_entry in reversed(models_to_unload):
+        if _unload_single_model(model_entry):
+            current_loaded_models.pop(i)
+            unloaded_count += 1
+
+    # Final memory cleanup if needed
+    if unloaded_count > 0:
         soft_empty_cache()
     elif vram_state != VRAMState.HIGH_VRAM:
         mem_free_total, mem_free_torch = get_free_memory(device, torch_free_too=True)
         if mem_free_torch > mem_free_total * 0.25:
             soft_empty_cache()
 
-    print('Done.')
-    return
+    print(f"[Memory Management] Unloaded {unloaded_count} models")
 
 
 def compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, inference_memory):
@@ -659,79 +719,124 @@ def compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, inference_mem
     return int(max(0, suggestion))
 
 
-def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
-    global vram_state
-    execution_start_time = time.perf_counter()
-    memory_to_free = max(minimum_inference_memory(), memory_required) + hard_memory_preservation
-    memory_for_inference = minimum_inference_memory() + hard_memory_preservation
-
+def _prepare_models_for_loading(models):
+    """Sort models into already loaded and to-be-loaded categories."""
     models_to_load = []
     models_already_loaded = []
-    for x in models:
-        loaded_model = LoadedModel(x)
+    
+    for model in models:
+        loaded_model = LoadedModel(model)
         if loaded_model in current_loaded_models:
             index = current_loaded_models.index(loaded_model)
             current_loaded_models.insert(0, current_loaded_models.pop(index))
             models_already_loaded.append(loaded_model)
         else:
             models_to_load.append(loaded_model)
+            
+    return models_to_load, models_already_loaded
 
+def _calculate_memory_requirements(models_to_load):
+    """Calculate total memory required per device for loading models."""
+    total_memory_required = {}
+    
+    for loaded_model in models_to_load:
+        loaded_model.compute_inclusive_exclusive_memory()
+        device = loaded_model.device
+        # Calculate memory with safety margin for shared parameters
+        memory = (loaded_model.exclusive_memory + 
+                 loaded_model.inclusive_memory * 0.25)  # 25% buffer for shared memory
+        total_memory_required[device] = (
+            total_memory_required.get(device, 0) + memory
+        )
+    
+    return total_memory_required
+
+def _handle_low_vram_loading(loaded_model, memory_for_inference, vram_set_state):
+    """Handle model loading in low VRAM conditions."""
+    model = loaded_model.model
+    torch_dev = model.load_device
+    current_free_mem = get_free_memory(torch_dev)
+    
+    model_require = loaded_model.exclusive_memory
+    previously_loaded = loaded_model.inclusive_memory
+    estimated_remaining = current_free_mem - model_require - memory_for_inference
+    
+    print(f"[Memory Management] Target: {model.model.__class__.__name__},"
+          f" Free GPU: {current_free_mem / (1024 * 1024):.2f} MB,"
+          f" Required: {model_require / (1024 * 1024):.2f} MB,"
+          f" Previous: {previously_loaded / (1024 * 1024):.2f} MB,"
+          f" Inference: {memory_for_inference / (1024 * 1024):.2f} MB,"
+          f" Remaining: {estimated_remaining / (1024 * 1024):.2f} MB")
+    
+    if estimated_remaining < 0:
+        vram_set_state = VRAMState.LOW_VRAM
+        swap_memory = compute_model_gpu_memory_when_using_cpu_swap(
+            current_free_mem, memory_for_inference)
+        return vram_set_state, previously_loaded or swap_memory
+    
+    return vram_set_state, -1
+
+def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
+    """
+    Load models to GPU with intelligent memory management.
+    
+    Args:
+        models: List of models to load
+        memory_required: Additional memory needed for operations
+        hard_memory_preservation: Memory to always keep free
+    """
+    global vram_state
+    execution_start_time = time.perf_counter()
+    
+    # Calculate memory requirements
+    memory_to_free = max(minimum_inference_memory(), memory_required) + hard_memory_preservation
+    memory_for_inference = minimum_inference_memory() + hard_memory_preservation
+    
+    # Prepare models for loading
+    models_to_load, models_already_loaded = _prepare_models_for_loading(models)
+    
+    # Handle case when all models are already loaded
     if not models_to_load:
-        devs = {m.device for m in models_already_loaded}
-        for d in devs:
-            if d != torch.device("cpu"):
-                free_memory(memory_to_free, d, models_already_loaded)
+        for dev in {m.device for m in models_already_loaded}:
+            if dev != torch.device("cpu"):
+                free_memory(memory_to_free, dev, models_already_loaded)
         moving_time = time.perf_counter() - execution_start_time
         if moving_time > 0.1:
             print(f'Memory cleanup took {moving_time:.2f} seconds')
         return
-
+    
+    # Unload model clones and calculate memory requirements
     for loaded_model in models_to_load:
         unload_model_clones(loaded_model.model)
-
-    total_memory_required = {}
-    for loaded_model in models_to_load:
-        loaded_model.compute_inclusive_exclusive_memory()
-        total_memory_required[loaded_model.device] = total_memory_required.get(loaded_model.device, 0) + loaded_model.exclusive_memory + loaded_model.inclusive_memory * 0.25
-
+    
+    total_memory_required = _calculate_memory_requirements(models_to_load)
+    
+    # Free required memory on each device
     for device, value in total_memory_required.items():
         if device != torch.device("cpu"):
             free_memory(value * 1.3 + memory_to_free, device, models_already_loaded)
-
+    
+    # Load each model
     for loaded_model in models_to_load:
         model = loaded_model.model
         torch_dev = model.load_device
-        vram_set_state = VRAMState.DISABLED if is_device_cpu(torch_dev) else vram_state
+        vram_set_state = (VRAMState.DISABLED if is_device_cpu(torch_dev) 
+                         else vram_state)
         model_gpu_memory_when_using_cpu_swap = -1
-
+        
+        # Handle low VRAM conditions
         if lowvram_available and vram_set_state in [VRAMState.LOW_VRAM, VRAMState.NORMAL_VRAM]:
-            model_require = loaded_model.exclusive_memory
-            previously_loaded = loaded_model.inclusive_memory
-            current_free_mem = get_free_memory(torch_dev)
-            estimated_remaining_memory = current_free_mem - model_require - memory_for_inference
-
-            print(f"[Memory Management] Target: {model.model.__class__.__name__}, Free GPU: {current_free_mem / (1024 * 1024):.2f} MB, "
-                  f"Model Require: {model_require / (1024 * 1024):.2f} MB, Previously Loaded: {previously_loaded / (1024 * 1024):.2f} MB, "
-                  f"Inference Require: {memory_for_inference / (1024 * 1024):.2f} MB, Remaining: {estimated_remaining_memory / (1024 * 1024):.2f} MB, ",
-                  end="")
-
-            if estimated_remaining_memory < 0:
-                vram_set_state = VRAMState.LOW_VRAM
-                model_gpu_memory_when_using_cpu_swap = compute_model_gpu_memory_when_using_cpu_swap(current_free_mem, memory_for_inference)
-                if previously_loaded > 0:
-                    model_gpu_memory_when_using_cpu_swap = previously_loaded
-
+            vram_set_state, model_gpu_memory_when_using_cpu_swap = _handle_low_vram_loading(
+                loaded_model, memory_for_inference, vram_set_state)
+        
+        # Force CPU swap in NO_VRAM state
         if vram_set_state == VRAMState.NO_VRAM:
             model_gpu_memory_when_using_cpu_swap = 0
-
-        # ADAPTIVE STRATEGY:
-        # If many attempts fail, try a safer dtype (like bf16 or fp32) if accessible through the model interface
-        # (This requires model interface to accept and adjust dtype.)
-        # This is a placeholder comment; actual dtype adjustment logic would go where model loaders are invoked.
-
+        
+        # Load the model and track it
         loaded_model.model_load(model_gpu_memory_when_using_cpu_swap)
         current_loaded_models.insert(0, loaded_model)
-
+    
     moving_time = time.perf_counter() - execution_start_time
     print(f'Loading model(s) took {moving_time:.2f} seconds')
     return
@@ -846,7 +951,7 @@ def text_encoder_dtype(device=None):
     elif args.clip_in_fp32:
         return torch.float32
 
-    return torch.float16 if not is_device_cpu(device) else torch.float16
+    return torch.float16 if is_device_cpu(device) else torch.float16
 
 
 def intermediate_device():
@@ -906,7 +1011,7 @@ def supports_cast(device, dtype):
         return True
     if is_device_mps(device):
         return False
-    return True if dtype in [torch.float8_e4m3fn, torch.float8_e5m2] else False
+    return dtype in [torch.float8_e4m3fn, torch.float8_e5m2]
 
 
 def pick_weight_dtype(dtype, fallback_dtype, device=None):
@@ -959,10 +1064,7 @@ def pytorch_attention_enabled():
 
 def pytorch_attention_flash_attention():
     global ENABLE_PYTORCH_ATTENTION
-    if ENABLE_PYTORCH_ATTENTION:
-        if is_nvidia() or is_intel_xpu():
-            return True
-    return False
+    return bool(ENABLE_PYTORCH_ATTENTION and (is_nvidia() or is_intel_xpu()))
 
 
 def force_upcast_attention_dtype():
