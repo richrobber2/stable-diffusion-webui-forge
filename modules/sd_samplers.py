@@ -99,26 +99,28 @@ def get_hr_scheduler_from_infotext(d: dict):
 
 @functools.cache
 def get_sampler_and_scheduler(sampler_name, scheduler_name, *, convert_automatic=True):
-    default_sampler = samplers[0]
-    found_scheduler = sd_schedulers.schedulers_map.get(scheduler_name, sd_schedulers.schedulers[0])
+    """Gets sampler and scheduler from their combined name or separately specified names."""
 
-    name = sampler_name or default_sampler.name
+    # Legacy combined names support
+    if scheduler_name is None and sampler_name is not None and '+' in sampler_name:
+        sampler_name, scheduler_name = sampler_name.split('+', maxsplit=1)
 
-    for scheduler in sd_schedulers.schedulers:
-        name_options = [scheduler.label, scheduler.name, *(scheduler.aliases or [])]
+    available_samplers = all_samplers_map
+    sampler = available_samplers.get(sampler_name, None)
+    
+    # Scheduler lookup without using aliases
+    scheduler = None
+    if scheduler_name:
+        scheduler = sd_schedulers.schedulers_map.get(scheduler_name)
+    
+    if scheduler is None and convert_automatic:
+        scheduler = sd_schedulers.schedulers_map.get('automatic')
+        
+    # If we still don't have a valid scheduler, get the default one
+    if scheduler is None:
+        scheduler = sd_schedulers.schedulers[0]
 
-        for name_option in name_options:
-            if name.endswith(f" {name_option}"):
-                found_scheduler = scheduler
-                name = name[:-(len(name_option) + 1)]
-                break
-
-    sampler = all_samplers_map.get(name, default_sampler)
-
-    if convert_automatic and sampler.options.get('scheduler', None) == found_scheduler.name:
-        found_scheduler = sd_schedulers.schedulers[0]
-
-    return sampler.name, found_scheduler.label
+    return sampler.name if sampler else None, scheduler.name if scheduler else None
 
 def fix_p_invalid_sampler_and_scheduler(p):
     i_sampler_name, i_scheduler = p.sampler_name, p.scheduler

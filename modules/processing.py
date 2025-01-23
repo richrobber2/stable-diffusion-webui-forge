@@ -1674,144 +1674,232 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
             self.mask_blur_y = value
 
     def init(self, all_prompts, all_seeds, all_subseeds):
+        """Initialize the image-to-image processing parameters.
+        Prepares image data and parameters for img2img processing, including
+        masking, color correction, and latent encoding.
+        Args:
+            all_prompts: List of prompts for each batch.
+            all_seeds: List of seeds for each batch.
+            all_subseeds: List of subseeds for each batch.
+        """
+        self._init_basic_params()
+        crop_region = self._process_mask()
+        batch_images = self._process_init_images(crop_region)
+        self._encode_to_latent(batch_images)
+        
+        if self.image_mask is not None:
+            self._setup_latent_mask(all_seeds)
+            
+        self.image_conditioning = self.img2img_image_conditioning(
+            batch_images * 2 - 1, 
+            self.init_latent,
+            self.image_mask,
+            self.mask_round
+        )
+
+    def _init_basic_params(self):
+        """Initialize basic processing parameters."""
         self.extra_generation_params["Denoising strength"] = self.denoising_strength
-
-        self.image_cfg_scale: float = None
-
+        self.image_cfg_scale = None
         self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
-        crop_region = None
 
-        image_mask = self.image_mask
+    def _process_mask(self):
+        """Process the input mask with blur and inpainting options.
+        Returns:
+            tuple: Crop region coordinates or None
+        """
+        if self.image_mask is None:
+            return None
+            
+        # Convert RGBA mask to binary
+        self.image_mask = create_binary_mask(self.image_mask, round=self.mask_round)
+        
+        if self.inpainting_mask_invert:
+            self.image_mask = ImageOps.invert(self.image_mask)
+            self.extra_generation_params["Mask mode"] = "Inpaint not masked"
 
-        if image_mask is not None:
-            # image_mask is passed in as RGBA by Gradio to support alpha masks,
-            # but we still want to support binary masks.
-            image_mask = create_binary_mask(image_mask, round=self.mask_round)
+        self._apply_mask_blur()
+        return self._handle_inpainting()
 
-            if self.inpainting_mask_invert:
-                image_mask = ImageOps.invert(image_mask)
-                self.extra_generation_params["Mask mode"] = "Inpaint not masked"
+    def _apply_mask_blur(self):
+        """Apply Gaussian blur to the mask if specified."""
+        if self.mask_blur_x > 0:
+            np_mask = np.array(self.image_mask)
+            kernel_size = 2 * int(2.5 * self.mask_blur_x + 0.5) + 1
+            np_mask = cv2.GaussianBlur(np_mask, (kernel_size, 1), self.mask_blur_x)
+            self.image_mask = Image.fromarray(np_mask)
 
-            if self.mask_blur_x > 0:
-                np_mask = np.array(image_mask)
-                kernel_size = 2 * int(2.5 * self.mask_blur_x + 0.5) + 1
-                np_mask = cv2.GaussianBlur(np_mask, (kernel_size, 1), self.mask_blur_x)
-                image_mask = Image.fromarray(np_mask)
+        if self.mask_blur_y > 0:
+            np_mask = np.array(self.image_mask)
+            kernel_size = 2 * int(2.5 * self.mask_blur_y + 0.5) + 1
+            np_mask = cv2.GaussianBlur(np_mask, (1, kernel_size), self.mask_blur_y)
+            self.image_mask = Image.fromarray(np_mask)
 
-            if self.mask_blur_y > 0:
-                np_mask = np.array(image_mask)
-                kernel_size = 2 * int(2.5 * self.mask_blur_y + 0.5) + 1
-                np_mask = cv2.GaussianBlur(np_mask, (1, kernel_size), self.mask_blur_y)
-                image_mask = Image.fromarray(np_mask)
+        if self.mask_blur_x > 0 or self.mask_blur_y > 0:
+            self.extra_generation_params["Mask blur"] = self.mask_blur
 
-            if self.mask_blur_x > 0 or self.mask_blur_y > 0:
-                self.extra_generation_params["Mask blur"] = self.mask_blur
+    def _handle_inpainting(self):
+        """Handle inpainting-specific mask processing.
+        Returns:
+            tuple: Crop region coordinates or None
+        """
+        if not self.inpaint_full_res:
+            self._handle_regular_inpainting()
+            return None
 
-            if self.inpaint_full_res:
-                self.mask_for_overlay = image_mask
-                mask = image_mask.convert('L')
-                crop_region = masking.get_crop_region_v2(mask, self.inpaint_full_res_padding)
-                if crop_region:
-                    crop_region = masking.expand_crop_region(crop_region, self.width, self.height, mask.width, mask.height)
-                    x1, y1, x2, y2 = crop_region
-                    mask = mask.crop(crop_region)
-                    image_mask = images.resize_image(2, mask, self.width, self.height)
-                    self.paste_to = (x1, y1, x2-x1, y2-y1)
-                    self.extra_generation_params["Inpaint area"] = "Only masked"
-                    self.extra_generation_params["Masked area padding"] = self.inpaint_full_res_padding
-                else:
-                    crop_region = None
-                    image_mask = None
-                    self.mask_for_overlay = None
-                    self.inpaint_full_res = False
-                    massage = 'Unable to perform "Inpaint Only mask" because mask is blank, switch to img2img mode.'
-                    self.sd_model.comments.append(massage)
-                    logging.info(massage)
-            else:
-                image_mask = images.resize_image(self.resize_mode, image_mask, self.width, self.height)
-                np_mask = np.array(image_mask)
-                np_mask = np.clip((np_mask.astype(np.float32)) * 2, 0, 255).astype(np.uint8)
-                self.mask_for_overlay = Image.fromarray(np_mask)
+        return self._handle_full_res_inpainting()
 
-            self.overlay_images = []
+    def _handle_regular_inpainting(self):
+        """Process mask for regular (non-full-res) inpainting."""
+        self.image_mask = images.resize_image(self.resize_mode, self.image_mask, self.width, self.height)
+        np_mask = np.array(self.image_mask)
+        np_mask = np.clip((np_mask.astype(np.float32)) * 2, 0, 255).astype(np.uint8)
+        self.mask_for_overlay = Image.fromarray(np_mask)
 
-        latent_mask = self.latent_mask if self.latent_mask is not None else image_mask
+    def _handle_full_res_inpainting(self):
+        """Process mask for full-resolution inpainting.
+        Returns:
+            tuple: Crop region coordinates or None
+        """
+        self.mask_for_overlay = self.image_mask
+        mask = self.image_mask.convert('L')
+        crop_region = masking.get_crop_region_v2(mask, self.inpaint_full_res_padding)
+        
+        if not crop_region:
+            self._handle_blank_mask()
+            return None
+            
+        return self._process_crop_region(crop_region, mask)
 
+    def _handle_blank_mask(self):
+        """Handle case where mask is blank."""
+        self.image_mask = None
+        self.mask_for_overlay = None
+        self.inpaint_full_res = False
+        message = 'Unable to perform "Inpaint Only mask" because mask is blank, switch to img2img mode.'
+        self.sd_model.comments.append(message)
+        logging.info(message)
+
+    def _process_crop_region(self, crop_region, mask):
+        """Process the crop region for full-res inpainting.
+        Returns:
+            tuple: Processed crop region coordinates
+        """
+        crop_region = masking.expand_crop_region(crop_region, self.width, self.height, mask.width, mask.height)
+        x1, y1, x2, y2 = crop_region
+        mask = mask.crop(crop_region)
+        self.image_mask = images.resize_image(2, mask, self.width, self.height)
+        self.paste_to = (x1, y1, x2-x1, y2-y1)
+        self.extra_generation_params.update({
+            "Inpaint area": "Only masked",
+            "Masked area padding": self.inpaint_full_res_padding
+        })
+        return crop_region
+
+    def _process_init_images(self, crop_region):
+        """Process and prepare initial images for processing.
+        Returns:
+            numpy.ndarray: Processed batch images
+        """
         if self.scripts is not None:
-            self.scripts.before_process_init_images(self, dict(crop_region=crop_region, image_mask=image_mask))
+            self.scripts.before_process_init_images(self, dict(
+                crop_region=crop_region, 
+                image_mask=self.image_mask
+            ))
 
         add_color_corrections = opts.img2img_color_correction and self.color_corrections is None
         if add_color_corrections:
             self.color_corrections = []
-        imgs = []
+
+        processed_images = self._process_individual_images(crop_region, add_color_corrections)
+        return self._create_batch_images(processed_images)
+
+    def _process_individual_images(self, crop_region, add_color_corrections):
+        """Process each input image individually.
+        Returns:
+            list: Processed images
+        """
+        processed_images = []
         for img in self.init_images:
-
-            # Save init image
             if opts.save_init_img:
-                self.init_img_hash = hashlib.md5(img.tobytes()).hexdigest()
-                images.save_image(img, path=opts.outdir_init_images, basename=None, forced_filename=self.init_img_hash, save_to_dirs=False, existing_info=img.info)
-
-            image = images.flatten(img, opts.img2img_background_color)
-
-            if crop_region is None and self.resize_mode != 3:
-                image = images.resize_image(self.resize_mode, image, self.width, self.height)
-
-            if image_mask is not None:
-                if self.mask_for_overlay.size != (image.width, image.height):
-                    self.mask_for_overlay = images.resize_image(self.resize_mode, self.mask_for_overlay, image.width, image.height)
-                image_masked = Image.new('RGBa', (image.width, image.height))
-                image_masked.paste(image.convert("RGBA").convert("RGBa"), mask=ImageOps.invert(self.mask_for_overlay.convert('L')))
-
-                self.overlay_images.append(image_masked.convert('RGBA'))
-
-            # crop_region is not None if we are doing inpaint full res
-            if crop_region is not None:
-                image = image.crop(crop_region)
-                image = images.resize_image(2, image, self.width, self.height)
-
-            if image_mask is not None and self.inpainting_fill != 1:
-                image = masking.fill(image, latent_mask)
+                self._save_init_image(img)
+                
+            processed = self._process_single_image(img, crop_region, add_color_corrections)
+            processed_images.append(processed)
             
-                if self.inpainting_fill == 0:
-                    self.extra_generation_params["Masked content"] = 'fill'
+        return processed_images
 
-            if add_color_corrections:
-                self.color_corrections.append(setup_color_correction(image))
+    def _save_init_image(self, img):
+        """Save initial image with hash as filename."""
+        self.init_img_hash = hashlib.md5(img.tobytes()).hexdigest()
+        images.save_image(
+            img,
+            path=opts.outdir_init_images,
+            basename=None,
+            forced_filename=self.init_img_hash,
+            save_to_dirs=False,
+            existing_info=img.info
+        )
 
-            image = np.array(image).astype(np.float32) / 255.0
-            image = np.moveaxis(image, 2, 0)
-
-            imgs.append(image)
-
-        if len(imgs) == 1:
-            batch_images = np.expand_dims(imgs[0], axis=0).repeat(self.batch_size, axis=0)
-            if self.overlay_images is not None:
-                self.overlay_images = self.overlay_images * self.batch_size
-
-            if self.color_corrections is not None and len(self.color_corrections) == 1:
-                self.color_corrections = self.color_corrections * self.batch_size
-
-        elif len(imgs) <= self.batch_size:
-            self.batch_size = len(imgs)
-            batch_images = np.array(imgs)
-        else:
-            raise RuntimeError(f"bad number of images passed: {len(imgs)}; expecting {self.batch_size} or less")
-
-        image = torch.from_numpy(batch_images)
-        image = image.to(shared.device, dtype=torch.float32)
+    def _encode_to_latent(self, batch_images):
+        """Encode processed images to latent space."""
+        image = torch.from_numpy(batch_images).to(shared.device, dtype=torch.float32)
 
         if opts.sd_vae_encode_method != 'Full':
             self.extra_generation_params['VAE Encoder'] = opts.sd_vae_encode_method
 
-        self.init_latent = images_tensor_to_samples(image, approximation_indexes.get(opts.sd_vae_encode_method), self.sd_model)
+        self.init_latent = images_tensor_to_samples(
+            image,
+            approximation_indexes.get(opts.sd_vae_encode_method),
+            self.sd_model
+        )
         devices.torch_gc()
 
         if self.resize_mode == 3:
-            self.init_latent = torch.nn.functional.interpolate(self.init_latent, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
+            self.init_latent = torch.nn.functional.interpolate(
+                self.init_latent,
+                size=(self.height // opt_f, self.width // opt_f),
+                mode="bilinear"
+            )
 
-        if image_mask is not None:
-            self._extracted_from_init_139(latent_mask, all_seeds)
-        self.image_conditioning = self.img2img_image_conditioning(image * 2 - 1, self.init_latent, image_mask, self.mask_round)
+    def _setup_latent_mask(self, all_seeds):
+        """Setup latent mask for inpainting."""
+        latent_mask = self.latent_mask if self.latent_mask is not None else self.image_mask
+        self._extracted_from_init_139(latent_mask, all_seeds)
+
+    def _process_single_image(self, img, crop_region, add_color_corrections):
+        image = img.copy()
+
+        if crop_region is not None:
+            image = image.crop(crop_region)
+
+        if self.resize_mode != 0:
+            image = images.resize_image(self.resize_mode, image, self.width, self.height)
+
+        if add_color_corrections:
+            self.color_corrections.append(setup_color_correction(image))
+
+        if self.mask is not None:
+            image_mask = self.mask
+
+            if crop_region is not None:
+                image_mask = image_mask.crop(crop_region)
+
+            if self.resize_mode != 0:
+                image_mask = images.resize_image(self.resize_mode, image_mask, self.width, self.height)
+
+            if image_mask.size != image.size:
+                image_mask = image_mask.resize(image.size, resample=Image.LANCZOS)
+
+            if self.inpainting_mask_invert:
+                image_mask = ImageOps.invert(image_mask)
+
+            image = self.apply_mask(image, image_mask)
+
+        image = np.array(image).astype(np.float32) / 255.0
+        image = np.moveaxis(image, 2, 0)
+
+        return image
 
     # TODO Rename this here and in `init`
     def _extracted_from_init_139(self, latent_mask, all_seeds):
@@ -1845,6 +1933,16 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         x = self.rng.next()
 
+        # Ensure noise matches latent dimensions
+        if x.shape != self.init_latent.shape:
+            # Resize noise to match latent dimensions
+            x = torch.nn.functional.interpolate(
+                x,
+                size=(self.init_latent.shape[2], self.init_latent.shape[3]),
+                mode='bilinear',
+                align_corners=False
+            )
+
         if self.initial_noise_multiplier != 1.0:
             self.extra_generation_params["Noise multiplier"] = self.initial_noise_multiplier
             x *= self.initial_noise_multiplier
@@ -1866,14 +1964,25 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
         samples = self.sampler.sample_img2img(self, self.init_latent, x, conditioning, unconditional_conditioning, image_conditioning=self.image_conditioning)
 
         if self.mask is not None:
-            blended_samples = samples * self.nmask + self.init_latent * self.mask
+            # For preview, show original with only masked area diffused
+            preview_samples = self.init_latent.clone()
+            preview_samples = preview_samples * self.mask + samples * self.nmask
+            # Store preview for display
+            self.sampler.last_latent = preview_samples
 
+            # For actual processing, blend normally
+            blended_samples = samples * self.nmask + self.init_latent * self.mask
+            
             if self.scripts is not None:
                 mba = scripts.MaskBlendArgs(samples, self.nmask, self.init_latent, self.mask, blended_samples)
                 self.scripts.on_mask_blend(self, mba)
                 blended_samples = mba.blended_latent
 
             samples = blended_samples
+
+        # Regular preview for non-masked images
+        else:
+            self.sampler.last_latent = samples
 
         del x
         devices.torch_gc()
@@ -1882,3 +1991,21 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
 
     def get_token_merging_ratio(self, for_hr=False):
         return self.token_merging_ratio or ("token_merging_ratio" in self.override_settings and opts.token_merging_ratio) or opts.token_merging_ratio_img2img or opts.token_merging_ratio
+
+    def _create_batch_images(self, processed_images):
+        """Create batch images from processed individual images.
+        
+        Args:
+            processed_images (list): List of processed numpy arrays representing images
+            
+        Returns:
+            numpy.ndarray: Concatenated batch of images
+        """
+        batch_images = np.array(processed_images)
+        if len(batch_images.shape) == 3:
+            # Single image
+            batch_images = np.expand_dims(batch_images, axis=0)
+        elif len(batch_images.shape) != 4:
+            raise ValueError(f"Unexpected batch images shape: {batch_images.shape}")
+            
+        return batch_images

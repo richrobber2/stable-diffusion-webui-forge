@@ -199,7 +199,10 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, *, ch, out_ch, ch_mult=(1, 2, 4, 8), num_res_blocks, attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels, resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False, **kwargs):
+    def __init__(self, *, ch: int, out_ch: int, ch_mult=(1, 2, 4, 8), num_res_blocks: int,
+                 attn_resolutions: list, dropout: float = 0.0, resamp_with_conv: bool = True,
+                 in_channels: int, resolution: int, z_channels: int, give_pre_end: bool = False,
+                 tanh_out: bool = False, use_linear_attn: bool = False):
         super().__init__()
         self.ch = ch
         self.temb_ch = 0
@@ -245,18 +248,25 @@ class Decoder(nn.Module):
         self.norm_out = Normalize(block_in)
         self.conv_out = nn.Conv2d(block_in, out_ch, kernel_size=3, stride=1, padding=1)
 
-    def forward(self, z, **kwargs):
+    def forward(self, z):
+        """Decode latent representation to image space.
+        
+        Args:
+            z: Latent representation tensor
+        Returns:
+            Decoded image tensor
+        """
         temb = None
         h = self.conv_in(z)
-        h = self.mid.block_1(h, temb, **kwargs)
-        h = self.mid.attn_1(h, **kwargs)
-        h = self.mid.block_2(h, temb, **kwargs)
+        h = self.mid.block_1(h, temb)
+        h = self.mid.attn_1(h)
+        h = self.mid.block_2(h, temb)
 
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
-                h = self.up[i_level].block[i_block](h, temb, **kwargs)
+                h = self.up[i_level].block[i_block](h, temb)
                 if len(self.up[i_level].attn) > 0:
-                    h = self.up[i_level].attn[i_block](h, **kwargs)
+                    h = self.up[i_level].attn[i_block](h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
 
@@ -265,7 +275,7 @@ class Decoder(nn.Module):
 
         h = self.norm_out(h)
         h = nonlinearity(h)
-        h = self.conv_out(h, **kwargs)
+        h = self.conv_out(h)
         if self.tanh_out:
             h = torch.tanh(h)
         return h
@@ -275,29 +285,46 @@ class IntegratedAutoencoderKL(nn.Module, ConfigMixin):
     config_name = 'config.json'
 
     @register_to_config
-    def __init__(self, in_channels=3, out_channels=3, down_block_types=("DownEncoderBlock2D",), up_block_types=("UpDecoderBlock2D",), block_out_channels=(64,), layers_per_block=1, act_fn="silu", latent_channels=4, norm_num_groups=32, sample_size=32, scaling_factor=0.18215, shift_factor=0.0, latents_mean=None, latents_std=None, force_upcast=True, use_quant_conv=True, use_post_quant_conv=True):
+    def __init__(self, in_channels: int = 3, out_channels: int = 3,
+                 down_block_types: tuple = ("DownEncoderBlock2D",),
+                 up_block_types: tuple = ("UpDecoderBlock2D",),
+                 block_out_channels: tuple = (64,), layers_per_block: int = 1,
+                 act_fn: str = "silu", latent_channels: int = 4,
+                 norm_num_groups: int = 32, sample_size: int = 32,
+                 scaling_factor: float = 0.18215, shift_factor: float = 0.0,
+                 resolution: int = 256, use_quant_conv: bool = True,
+                 use_post_quant_conv: bool = True):
+        # sourcery skip: remove-unnecessary-cast
         super().__init__()
         ch = block_out_channels[0]
         ch_mult = [x // ch for x in block_out_channels]
-        self.encoder = Encoder(double_z=True, z_channels=latent_channels, resolution=256, in_channels=in_channels, out_ch=out_channels, ch=ch, ch_mult=ch_mult, num_res_blocks=layers_per_block, attn_resolutions=[], dropout=0.0)
-        self.decoder = Decoder(double_z=True, z_channels=latent_channels, resolution=256, in_channels=in_channels, out_ch=out_channels, ch=ch, ch_mult=ch_mult, num_res_blocks=layers_per_block, attn_resolutions=[], dropout=0.0)
+        
+        # Encoder still needs double_z
+        self.encoder = Encoder(double_z=True, z_channels=latent_channels,
+                             resolution=resolution, in_channels=in_channels,
+                             out_ch=out_channels, ch=ch, ch_mult=ch_mult,
+                             num_res_blocks=layers_per_block,
+                             attn_resolutions=[], dropout=0.0)
+
+        # Remove double_z from Decoder initialization
+        self.decoder = Decoder(z_channels=latent_channels,
+                             resolution=resolution, in_channels=in_channels,
+                             out_ch=out_channels, ch=ch, ch_mult=ch_mult,
+                             num_res_blocks=layers_per_block,
+                             attn_resolutions=[], dropout=0.0)
+
         self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1) if use_quant_conv else None
         self.post_quant_conv = nn.Conv2d(latent_channels, latent_channels, 1) if use_post_quant_conv else None
         self.embed_dim = latent_channels
         self.scaling_factor = scaling_factor
-        self.shift_factor = shift_factor
+        self.shift_factor = float(shift_factor)  # Ensure float type
 
-        if not isinstance(self.shift_factor, float):
-            self.shift_factor = 0.0
-
-    def encode(self, x, regulation=None):
+    def encode(self, x):
+        """Encode input image to latent representation."""
         z = self.encoder(x)
-
-        if self.quant_conv is not None:
-            z = self.quant_conv(z)
-
+        z = self.quant_conv(z)
         posterior = DiagonalGaussianDistribution(z)
-        return regulation(posterior) if regulation is not None else posterior.sample()
+        return posterior.sample()
 
     def decode(self, z):
         if self.post_quant_conv is not None:

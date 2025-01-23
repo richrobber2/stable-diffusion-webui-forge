@@ -179,7 +179,22 @@ class CFGDenoiser(torch.nn.Module):
 
         if self.mask is not None:
             predictor = self.inner_model.inner_model.forge_objects.unet.model.predictor
-            noisy_initial_latent = predictor.noise_scaling(sigma[:, None, None, None], torch.randn_like(self.init_latent).to(self.init_latent), self.init_latent, max_denoise=False)
+
+                # Fix sigma tensor shape and make it compatible
+            if isinstance(sigma, float):
+                sigma = torch.tensor([sigma], device=x.device)
+            elif isinstance(sigma, torch.Tensor) and sigma.ndim == 0:
+                sigma = sigma.view(1)
+            
+            # Add broadcasting dimensions for noise scaling
+            sigma_broadcasted = sigma.view(-1, 1, 1, 1)
+            
+            noisy_initial_latent = predictor.noise_scaling(
+                sigma_broadcasted, 
+                torch.randn_like(self.init_latent).to(self.init_latent), 
+                self.init_latent,
+                max_denoise=False
+            )
             x = x * self.nmask + noisy_initial_latent * self.mask
 
         denoiser_params = CFGDenoiserParams(x, image_cond, sigma, state.sampling_step, state.sampling_steps, cond, uncond, self)

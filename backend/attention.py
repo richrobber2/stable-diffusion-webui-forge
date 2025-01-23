@@ -1,3 +1,4 @@
+import time
 from typing import Optional, Tuple, Dict, Any, Callable, Union, Protocol, TypeVar
 from dataclasses import dataclass
 from functools import lru_cache
@@ -8,13 +9,139 @@ import einops
 from torch import Tensor
 import threading
 import weakref
+from functools import lru_cache, LRUCache
 from abc import ABC, abstractmethod
+import logging
+from enum import Enum, auto
 
 from backend.args import args
 from backend import memory_management
 from backend.misc.sub_quadratic_attention import efficient_dot_product_attention
 
-# Custom exceptions for better error handling
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Add xformers import with proper error handling
+try:
+    import xformers
+    import xformers.ops
+    XFORMERS_AVAILABLE = True
+except ImportError:
+    XFORMERS_AVAILABLE = False
+    print("xformers not available - using fallback attention implementation")
+
+class AttentionBackend(Enum):
+    """Available attention computation backends"""
+    XFORMERS = auto()
+    PYTORCH = auto()
+    SPLIT = auto()
+    SUB_QUADRATIC = auto()
+
+@dataclass(frozen=True)
+class BackendConfig:
+    """Immutable attention backend configuration"""
+    xformers_enabled: bool
+    pytorch_attention_enabled: bool
+    force_upcast_attention: Optional[torch.dtype]
+    broken_xformers: bool = False
+    
+    @classmethod
+    def create(cls) -> 'BackendConfig':
+        """Create backend configuration from environment"""
+        xformers_ok = memory_management.xformers_enabled() and XFORMERS_AVAILABLE
+        pytorch_ok = memory_management.pytorch_attention_enabled()
+        upcast = memory_management.force_upcast_attention_dtype()
+        
+        # Check xformers version
+        broken = False
+        if xformers_ok:
+            try:
+                broken = xformers.__version__.startswith("0.0.2") and not xformers.__version__.startswith("0.0.20")
+            except:
+                xformers_ok = False
+                
+        return cls(
+            xformers_enabled=xformers_ok,
+            pytorch_attention_enabled=pytorch_ok,
+            force_upcast_attention=upcast,
+            broken_xformers=broken
+        )
+
+class CacheManager:
+    """Manages attention caches with memory awareness"""
+    
+    def __init__(self, max_memory_fraction: float = 0.3, cache_lifetime: int = 300):
+        self.max_memory_fraction = max_memory_fraction
+        self.cache_lifetime = cache_lifetime
+        self.caches: Dict[str, MemoryAwareCache] = {}
+        
+    def get_cache(self, name: str) -> 'MemoryAwareCache':
+        """Get or create a cache by name"""
+        if name not in self.caches:
+            self.caches[name] = MemoryAwareCache(
+                self.max_memory_fraction,
+                self.cache_lifetime
+            )
+        return self.caches[name]
+        
+    def clear_all(self):
+        """Clear all caches"""
+        for cache in self.caches.values():
+            cache.clear()
+            
+    def check_memory_pressure(self):
+        """Clear caches if memory pressure is high"""
+        mem_free_total, mem_free_torch = memory_management.get_free_memory(
+            torch.device('cuda'), True)
+        if mem_free_torch / mem_free_total < 0.2:  # Clear if less than 20% free
+            self.clear_all()
+
+class MemoryAwareCache:
+    """Thread-safe cache with memory monitoring"""
+    
+    def __init__(self, max_memory_fraction: float = 0.3, cache_lifetime: int = 300):
+        self.max_memory_fraction = max_memory_fraction
+        self.cache_lifetime = cache_lifetime
+        self.cache = weakref.WeakValueDictionary()
+        self.last_access_times: Dict[Tuple, float] = {}
+        self.lock = threading.Lock()
+        
+    def get(self, key: Tuple) -> Optional[Tensor]:
+        """Get cached value with timestamp update"""
+        with self.lock:
+            value = self.cache.get(key)
+            if value is not None:
+                self.last_access_times[key] = time.time()
+            return value
+            
+    def set(self, key: Tuple, value: Tensor) -> None:
+        """Set cache value with memory and lifetime checks"""
+        with self.lock:
+            current_time = time.time()
+            # Clear old entries
+            old_keys = [k for k, t in self.last_access_times.items() 
+                       if current_time - t > self.cache_lifetime]
+            for k in old_keys:
+                self.cache.pop(k, None)
+                self.last_access_times.pop(k, None)
+                
+            # Check memory before adding
+            if self._check_memory_usage():
+                self.cache[key] = value
+                self.last_access_times[key] = current_time
+            
+    def clear(self) -> None:
+        """Clear cache and timestamps"""
+        with self.lock:
+            self.cache.clear()
+            self.last_access_times.clear()
+            
+    def _check_memory_usage(self) -> bool:
+        """Check if memory usage is within limits"""
+        mem_free_total, mem_free_torch = memory_management.get_free_memory(
+            torch.device('cuda'), True)
+        return mem_free_torch / mem_free_total > self.max_memory_fraction
+
 class AttentionError(Exception):
     """Base exception for attention-related errors"""
     pass
@@ -27,36 +154,20 @@ class InvalidConfigurationError(AttentionError):
     """Raised when attention configuration is invalid"""
     pass
 
+class SpatialAttentionError(AttentionError):
+    """Raised when spatial attention computation fails"""
+    pass
+
+# Initialize global configuration and cache manager
+backend_config = BackendConfig.create()
+cache_manager = CacheManager()
+
 # Define attention strategy protocol
 class AttentionStrategy(Protocol):
     def __call__(self, q: Tensor, k: Tensor, v: Tensor,
                  heads: int, mask: Optional[Tensor] = None,
                  attn_precision: Optional[torch.dtype] = None) -> Tensor:
         ...
-
-# Memory-aware cache implementation
-class MemoryAwareCache:
-    def __init__(self, max_memory_fraction: float = 0.3):
-        self.max_memory_fraction = max_memory_fraction
-        self.cache = weakref.WeakValueDictionary()
-        self.lock = threading.Lock()
-
-    def get(self, key: Tuple) -> Optional[Tensor]:
-        with self.lock:
-            return self.cache.get(key)
-
-    def set(self, key: Tuple, value: Tensor) -> None:
-        with self.lock:
-            self.cache[key] = value
-            self._maybe_cleanup()
-
-    def _maybe_cleanup(self) -> None:
-        if not self._check_memory_usage():
-            self.cache.clear()
-
-    def _check_memory_usage(self) -> bool:
-        mem_free_total, mem_free_torch = memory_management.get_free_memory(torch.device('cuda'), True)
-        return mem_free_torch / mem_free_total > self.max_memory_fraction
 
 # Performance monitoring
 class AttentionMetrics:
@@ -91,61 +202,92 @@ class AttentionConfig:
     enable_metrics: bool = False
 
 # Base attention implementation
-class BaseAttention(ABC):
+class AttentionBase(ABC):
+    """Base class for all attention implementations"""
     def __init__(self, config: AttentionConfig):
         self.config = config
-        self.cache = MemoryAwareCache(config.max_cache_memory_fraction) if config.use_cache else None
-        self.metrics = AttentionMetrics() if config.enable_metrics else None
+        self._cache = MemoryAwareCache()
+        self._metrics = AttentionMetrics() if config.enable_metrics else None
 
     @abstractmethod
     def forward(self, q: Tensor, k: Tensor, v: Tensor,
                 heads: int, mask: Optional[Tensor] = None) -> Tensor:
         pass
 
-    def __call__(self, *args, **kwargs) -> Tensor:
-        cache_key = self._get_cache_key(*args, **kwargs)
-        if self.cache:
-            cached_result = self.cache.get(cache_key)
-            if cached_result is not None:
-                if self.metrics:
-                    self.metrics.record_call(0.0, True)
-                return cached_result
+    def __call__(self, q: Tensor, k: Tensor, v: Tensor,
+                 heads: int, mask: Optional[Tensor] = None) -> Tensor:
+        cache_key = (q.shape, k.shape, v.shape, heads, 
+                    getattr(mask, 'shape', None))
+        
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-        start_time = time.time()
-        result = self.forward(*args, **kwargs)
-        duration = time.time() - start_time
+        start = time.time()
+        try:
+            result = self.forward(q, k, v, heads, mask)
+            self._cache.set(cache_key, result)
+            
+            if self._metrics:
+                self._metrics.record_call(time.time() - start, True)
+            
+            return result
+        except Exception as e:
+            if isinstance(e, torch.cuda.OutOfMemoryError):
+                self._cache.clear()
+                torch.cuda.empty_cache()
+                return self.forward(q, k, v, heads, mask)
+            raise AttentionError(f"Attention computation failed: {str(e)}") from e
 
-        if self.cache:
-            self.cache.set(cache_key, result)
-        if self.metrics:
-            self.metrics.record_call(duration, False)
+class LazyAttentionLoader:
+    """Lazy loader for attention implementations to reduce memory usage"""
+    _loaded_implementation = None
+    _backend = None
 
-        return result
+    @classmethod
+    def get_implementation(cls):
+        """Get or load the appropriate attention implementation"""
+        current_backend = cls._get_current_backend()
+        
+        # Return cached implementation if backend hasn't changed
+        if cls._loaded_implementation and cls._backend == current_backend:
+            return cls._loaded_implementation
 
-    def _get_cache_key(self, *args, **kwargs) -> Tuple:
-        return args, tuple(sorted(kwargs.items()))
+        # Clear old implementation
+        cls._loaded_implementation = None
+        cls._backend = None
 
-# Implement concrete attention strategies
-class XFormersAttention(BaseAttention):
-    def forward(self, q: Tensor, k: Tensor, v: Tensor,
-                heads: int, mask: Optional[Tensor] = None) -> Tensor:
-        return attention_xformers(q, k, v, heads, mask, self.config.attn_precision)
+        # Load new implementation based on backend
+        if backend_config.xformers_enabled and XFORMERS_AVAILABLE:
+            cls._loaded_implementation = XFormersAttention
+        elif backend_config.pytorch_attention_enabled:
+            cls._loaded_implementation = PyTorchAttention
+        elif args.attention_split:
+            cls._loaded_implementation = SplitAttention
+        else:
+            cls._loaded_implementation = SubQuadraticAttention
 
-class PyTorchAttention(BaseAttention):
-    def forward(self, q: Tensor, k: Tensor, v: Tensor,
-                heads: int, mask: Optional[Tensor] = None) -> Tensor:
-        return attention_pytorch(q, k, v, heads, mask, self.config.attn_precision)
+        cls._backend = current_backend
+        return cls._loaded_implementation
 
-# Factory for attention mechanisms
+    @staticmethod
+    def _get_current_backend() -> str:
+        """Get current backend configuration as string"""
+        if backend_config.xformers_enabled and XFORMERS_AVAILABLE:
+            return "xformers"
+        elif backend_config.pytorch_attention_enabled:
+            return "pytorch"
+        elif args.attention_split:
+            return "split"
+        else:
+            return "subquadratic"
+
+# Modify AttentionFactory to use lazy loader
 class AttentionFactory:
     @staticmethod
-    def create(config: AttentionConfig) -> BaseAttention:
-        if _BACKEND_CONFIG['xformers_enabled']:
-            return XFormersAttention(config)
-        elif _BACKEND_CONFIG['pytorch_attention_enabled']:
-            return PyTorchAttention(config)
-        else:
-            raise InvalidConfigurationError("No valid attention backend available.")
+    def create(config: AttentionConfig) -> AttentionBase:
+        implementation = LazyAttentionLoader.get_implementation()
+        return implementation(config)
 
 # Cache management
 def clear_attention_caches():
@@ -250,24 +392,7 @@ def get_mask_for_heads(mask_shape: Tuple[int, ...], heads: int, device: torch.de
 def get_attn_precision(attn_precision: Optional[torch.dtype] = torch.float32) -> Optional[torch.dtype]:
     if args.disable_attention_upcast:
         return None
-    return FORCE_UPCAST_ATTENTION_DTYPE or attn_precision
-
-# Initialize backend configuration once
-_BACKEND_CONFIG = {
-    'xformers_enabled': memory_management.xformers_enabled(),
-    'pytorch_attention_enabled': memory_management.pytorch_attention_enabled(),
-    'force_upcast_attention': memory_management.force_upcast_attention_dtype()
-}
-
-# Check xformers version compatibility once
-BROKEN_XFORMERS = False
-if _BACKEND_CONFIG['xformers_enabled']:
-    try:
-        import xformers
-        import xformers.ops
-        BROKEN_XFORMERS = xformers.__version__.startswith("0.0.2") and not xformers.__version__.startswith("0.0.20")
-    except ImportError:
-        _BACKEND_CONFIG['xformers_enabled'] = False
+    return backend_config.force_upcast_attention or attn_precision
 
 # Add efficient tensor caching
 @lru_cache(maxsize=256)
@@ -287,6 +412,115 @@ def simple_rearrange_qkv(tensor: torch.Tensor, b: int, heads: int, dim_head: int
     if skip_reshape:
         return tensor.view(b * heads, -1, dim_head)
     return tensor.view(b, -1, heads, dim_head).transpose(1, 2).reshape(b * heads, -1, dim_head)
+
+@dataclass
+class SpiralConfig:
+    """Configuration for spiral attention pattern"""
+    start_radius: float = 0.0
+    growth_rate: float = 0.1
+    decay_factor: float = 5.0
+    min_value: float = -100.0
+    use_exponential: bool = True
+    cache_size: int = 32
+
+@torch.jit.script
+def create_spiral_pattern(height: int, width: int, config: Dict[str, float]) -> Tensor:
+    """JIT-optimized spiral pattern creation"""
+    y_coords, x_coords = torch.meshgrid(
+        torch.linspace(-1, 1, height),
+        torch.linspace(-1, 1, width),
+        indexing='ij'
+    )
+    
+    r = torch.sqrt(x_coords**2 + y_coords**2)
+    theta = torch.atan2(y_coords, x_coords)
+    theta_pos = theta + math.pi
+    
+    spiral_r = config["start_radius"] + config["growth_rate"] * theta_pos
+    spiral_dist = torch.abs(r - spiral_r)
+    
+    if config["use_exponential"]:
+        spiral_score = torch.exp(-spiral_dist * config["decay_factor"])
+    else:
+        spiral_score = 1.0 / (1.0 + spiral_dist * config["decay_factor"])
+    
+    spiral_score = spiral_score.clamp(min=math.exp(config["min_value"]))
+    return spiral_score
+
+class SpiralAttention:
+    """Efficient spiral attention implementation with caching"""
+    
+    def __init__(self, config: Optional[SpiralConfig] = None):
+        self.config = config or SpiralConfig()
+        self._cache = LRUCache(self.config.cache_size)
+        
+    @staticmethod
+    def _make_cache_key(height: int, width: int, device: torch.device, dtype: torch.dtype) -> Tuple:
+        return (height, width, str(device), str(dtype))
+        
+    def get_spiral_bias(self, height: int, width: int, 
+                       heads: int, device: torch.device, 
+                       dtype: torch.dtype) -> Tensor:
+        """Get cached or compute spiral attention bias"""
+        cache_key = self._make_cache_key(height, width, device, dtype)
+        
+        if cache_key in self._cache:
+            bias = self._cache[cache_key]
+        else:
+            config_dict = {
+                "start_radius": self.config.start_radius,
+                "growth_rate": self.config.growth_rate,
+                "decay_factor": self.config.decay_factor,
+                "min_value": self.config.min_value,
+                "use_exponential": float(self.config.use_exponential)  # Convert bool to float for JIT
+            }
+            
+            with torch.device(device):
+                bias = create_spiral_pattern(height, width, config_dict)
+                flat_bias = bias.view(-1)
+                bias = (flat_bias.unsqueeze(0) + flat_bias.unsqueeze(1)) / 2.0
+                bias = bias.to(dtype=dtype)
+                self._cache[cache_key] = bias
+                
+        # Expand for multiple heads
+        return bias.unsqueeze(0).expand(heads, -1, -1)
+
+def attention_with_spiral_bias(q: Tensor, k: Tensor, v: Tensor,
+                             heads: int, mask: Optional[Tensor] = None,
+                             spiral_config: Optional[SpiralConfig] = None,
+                             skip_reshape: bool = False) -> Tensor:
+    """Enhanced attention with configurable spiral bias"""
+    b, seq_len, _ = q.shape
+    height = width = int(math.sqrt(seq_len))
+    
+    if height * width != seq_len:
+        # Fall back to regular attention if input is not square
+        return attention_basic(q, k, v, heads, mask, skip_reshape=skip_reshape)
+    
+    spiral = SpiralAttention(spiral_config)
+    spiral_bias = spiral.get_spiral_bias(height, width, heads, q.device, q.dtype)
+    
+    # Regular attention computation
+    scale = get_scale(q.shape[-1], None, heads)
+    q = simple_rearrange_qkv(q, b, heads, q.shape[-1] // heads, skip_reshape)
+    k = simple_rearrange_qkv(k, b, heads, k.shape[-1] // heads, skip_reshape)
+    v = simple_rearrange_qkv(v, b, heads, v.shape[-1] // heads, skip_reshape)
+    
+    sim = torch.bmm(q, k.transpose(-2, -1))
+    sim *= scale
+    
+    # Add spiral bias (in log space)
+    sim = sim + spiral_bias.log()
+    
+    # Apply mask if provided
+    if mask is not None:
+        sim = sim + mask
+    
+    # Compute attention and reshape
+    attn = torch.softmax(sim, dim=-1)
+    out = torch.bmm(attn, v)
+    
+    return out.view(b, heads, seq_len, v.shape[-1] // heads).transpose(1, 2).reshape(b, seq_len, -1)
 
 def create_spiral_bias(height: int, width: int, 
                       a: float = 0.0, 
@@ -339,51 +573,11 @@ def get_spiral_bias(height: int, width: int, heads: int,
     bias = create_spiral_bias(height, width, device=device, dtype=dtype)
     return bias.unsqueeze(0).repeat(heads, 1, 1)
 
-def attention_with_spiral_bias(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                             heads: int, mask: Optional[torch.Tensor] = None,
-                             attn_precision: Optional[torch.dtype] = None,
-                             use_spiral: bool = True) -> torch.Tensor:
-    """Attention computation with optional spiral bias"""
-    b, seq_len, _ = q.shape
-    height = width = int(math.sqrt(seq_len))
-
-    # Regular attention computation
-    attn_precision = get_attn_precision(attn_precision)
-    scale = get_scale(q.shape[-1], attn_precision, heads)
-
-    # Reshape for attention
-    q = simple_rearrange_qkv(q, b, heads, q.shape[-1] // heads)
-    k = simple_rearrange_qkv(k, b, heads, k.shape[-1] // heads)
-    v = simple_rearrange_qkv(v, b, heads, k.shape[-1] // heads)
-
-    # Compute attention scores
-    sim = q.bmm(k.transpose(-2, -1))
-    sim *= scale
-
-    # Add spiral bias if requested
-    if use_spiral and height**2 == seq_len:  # Only apply to square inputs
-        spiral_bias = get_spiral_bias(height, width, heads, q.device, q.dtype)
-        sim += spiral_bias.log()  # Convert closeness to additive bias
-
-    # Apply mask if provided
-    if mask is not None:
-        sim = sim + mask
-
-    # Softmax and final computation
-    sim = torch.softmax(sim, dim=-1)
-    hidden_states = torch.bmm(sim, v)
-
-    # Reshape output
-    hidden_states = hidden_states.view(b, heads, seq_len, v.shape[-1])
-    hidden_states = hidden_states.transpose(1, 2).reshape(b, seq_len, heads * v.shape[-1])
-
-    return hidden_states
-
 def attention_basic(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, 
                    heads: int, mask: Optional[torch.Tensor] = None, 
                    attn_precision: torch.dtype = torch.float32,
                    skip_reshape: bool = False,
-                   use_spiral: bool = False) -> torch.Tensor:
+                   use_spiral: bool = True) -> torch.Tensor:
     """Optimized basic attention implementation"""
     if use_spiral:
         return attention_with_spiral_bias(q, k, v, heads, mask, attn_precision)
@@ -407,7 +601,7 @@ def attention_basic(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
             pass
 
         sim_dtype = torch.float32 if attn_precision == torch.float32 else q.dtype
-        sim = q_.bmm(k_.transpose(-2, -1))
+        sim = q.bmm(k.transpose(-2, -1))
         sim *= scale
 
         if mask is not None:
@@ -458,25 +652,32 @@ def attention_xformers(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                       heads: int, mask: Optional[torch.Tensor] = None,
                       attn_precision: Optional[torch.dtype] = None,
                       skip_reshape: bool = False) -> torch.Tensor:
-    """Optimized xformers attention implementation"""
+    """Optimized xformers attention implementation with fallback"""
+    if not XFORMERS_AVAILABLE:
+        return attention_pytorch(q, k, v, heads, mask, attn_precision, skip_reshape)
+        
     if skip_reshape:
         b, seq, _, dim_head = q.shape
     else:
         b, seq, total_dim = q.shape
         dim_head = total_dim // heads
 
-    if BROKEN_XFORMERS and b * heads > 65535:
+    if backend_config.broken_xformers and b * heads > 65535:
         return attention_pytorch(q, k, v, heads, mask, skip_reshape=skip_reshape)
 
-    q = simple_rearrange_qkv(q, b, heads, dim_head, skip_reshape)
-    k = simple_rearrange_qkv(k, b, heads, dim_head, skip_reshape)
-    v = simple_rearrange_qkv(v, b, heads, dim_head, skip_reshape)
+    try:
+        q = simple_rearrange_qkv(q, b, heads, dim_head, skip_reshape)
+        k = simple_rearrange_qkv(k, b, heads, dim_head, skip_reshape)
+        v = simple_rearrange_qkv(v, b, heads, dim_head, skip_reshape)
 
-    if mask is not None:
-        mask = get_mask_for_heads(mask.shape, heads, mask.device, mask.dtype)
+        if mask is not None:
+            mask = get_mask_for_heads(mask.shape, heads, mask.device, mask.dtype)
 
-    out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=mask)
-    return out.view(b, heads, seq, dim_head).transpose(1, 2).reshape(b, seq, heads * dim_head)
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=mask)
+        return out.view(b, heads, seq, dim_head).transpose(1, 2).reshape(b, seq, heads * dim_head)
+    except Exception as e:
+        logger.warning(f"xformers attention failed: {str(e)}, falling back to PyTorch attention")
+        return attention_pytorch(q, k, v, heads, mask, attn_precision, skip_reshape)
 
 def attention_pytorch(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                      heads: int, mask: Optional[torch.Tensor] = None,
@@ -521,27 +722,49 @@ def attention_pytorch(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     return out
 
 def slice_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Memory-efficient spatial attention slicing"""
+    """Memory-efficient spatial attention slicing with smart buffering"""
     with torch.inference_mode():
         dtype = torch.float32 if q.dtype == torch.float16 else q.dtype
         b, hw, c = q.shape
         scale = 1.0 / math.sqrt(q.shape[-1] + (1e-5 if dtype == torch.float32 else 1e-4))
 
-        r1 = torch.empty((v.shape[0], v.shape[1], q.shape[1]), dtype=q.dtype, device=q.device)
-
+        # Pre-allocate output and intermediate buffers
+        r1 = torch.zeros((v.shape[0], v.shape[1], q.shape[1]), dtype=q.dtype, device=q.device)
+        
+        # Calculate optimal slice size based on available memory
         mem_free_total, mem_free_torch = memory_management.get_free_memory(q.device, True)
         tensor_size = q.numel() * k.shape[2] * q.element_size()
-
         steps = max(1, min(128, 2 ** math.ceil(math.log2(tensor_size * 3.0 / mem_free_total))))
         slice_size = q.shape[1] // steps if (q.shape[1] % steps) == 0 else q.shape[1]
 
+        # Allocate a reusable buffer for intermediate results
+        # This avoids creating new tensors in the loop
+        buffer_size = (b, slice_size, k.shape[1])
+        intermediate_buffer = torch.empty(buffer_size, dtype=q.dtype, device=q.device)
+        softmax_buffer = torch.empty_like(intermediate_buffer)
+
         for i in range(0, q.shape[1], slice_size):
             end = i + slice_size
-            s1 = q[:, i:end].bmm(k)
-            s1 *= scale
-            s1 = torch.softmax(s1, dim=-1)
-            r1[:, :, i:end].copy_(torch.bmm(v, s1.transpose(-2, -1)))
-            del s1
+            current_slice = min(slice_size, q.shape[1] - i)
+            
+            # Use buffers with correct size view
+            if current_slice != slice_size:
+                curr_buffer = intermediate_buffer[:, :current_slice]
+                curr_softmax = softmax_buffer[:, :current_slice]
+            else:
+                curr_buffer = intermediate_buffer
+                curr_softmax = softmax_buffer
+
+            # Calculate attention scores using buffer
+            torch.bmm(q[:, i:end], k, out=curr_buffer)
+            curr_buffer *= scale
+            
+            # Softmax in-place using buffer
+            torch.softmax(curr_buffer, dim=-1, out=curr_softmax)
+            
+            # Final multiplication directly into output
+            torch.bmm(v, curr_softmax.transpose(-2, -1), out=r1[:, :, i:end])
+
         return r1
 
 def normal_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -554,20 +777,27 @@ def normal_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: to
     r1 = slice_attention_single_head_spatial(q_, k_, v_)
     return r1.view(b, c, h, w)
 
+def safe_spatial_attention(func: Callable) -> Callable:
+    """Decorator for safe spatial attention computation"""
+    def wrapper(*args, **kwargs) -> Tensor:
+        try:
+            return func(*args, **kwargs)
+        except (RuntimeError, memory_management.OOM_EXCEPTION) as e:
+            logger.warning(f"Spatial attention failed: {e}, falling back to slice attention")
+            return slice_attention_single_head_spatial(*args, **kwargs)
+        except Exception as e:
+            raise SpatialAttentionError(f"Unexpected error in spatial attention: {str(e)}") from e
+    return wrapper
+
+@safe_spatial_attention
 def xformers_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Xformers-based spatial attention"""
+    """Safer xformers spatial attention implementation"""
     B, C, H, W = q.shape
-    try:
-        q_ = q.view(B, C, H*W).transpose(1, 2).contiguous()
-        k_ = k.view(B, C, H*W).transpose(1, 2).contiguous()
-        v_ = v.view(B, C, H*W).transpose(1, 2).contiguous()
-        out = xformers.ops.memory_efficient_attention(q_, k_, v_, attn_bias=None)
-        return out.transpose(1, 2).view(B, C, H, W)
-    except RuntimeError:
-        q_ = q.view(B, C, H*W).transpose(1,2)
-        k_ = k.view(B, C, H*W)
-        v_ = v.view(B, C, H*W)
-        return slice_attention_single_head_spatial(q_, k_, v_).view(B, C, H, W)
+    q_ = q.view(B, C, H*W).transpose(1, 2).contiguous()
+    k_ = k.view(B, C, H*W).transpose(1, 2).contiguous()
+    v_ = v.view(B, C, H*W).transpose(1, 2).contiguous()
+    out = xformers.ops.memory_efficient_attention(q_, k_, v_, attn_bias=None)
+    return out.transpose(1, 2).view(B, C, H, W)
 
 def pytorch_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """PyTorch native spatial attention"""
@@ -587,10 +817,10 @@ def pytorch_attention_single_head_spatial(q: torch.Tensor, k: torch.Tensor, v: t
         return slice_attention_single_head_spatial(q_, k_, v_).view(B, C, H, W)
 
 # Select attention implementations based on backend configuration
-if _BACKEND_CONFIG['xformers_enabled']:
+if backend_config.xformers_enabled:
     attention_function = attention_xformers
     attention_function_single_head_spatial = xformers_attention_single_head_spatial
-elif _BACKEND_CONFIG['pytorch_attention_enabled']:
+elif backend_config.pytorch_attention_enabled:
     attention_function = attention_pytorch
     attention_function_single_head_spatial = pytorch_attention_single_head_spatial
 elif args.attention_split:
@@ -623,13 +853,14 @@ def attention_memory_efficient(q: Tensor, k: Tensor, v: Tensor,
             chunk_mask = mask[:, i:i + chunk_size] if mask is not None else None
             
             # Process chunks
-            chunk_output = process_attention_chunk(chunk_q, k, v, chunk_mask, chunk_size)
+            chunk_output = attention_pytorch(chunk_q, k, v, heads, chunk_mask, attn_precision)
             output[:, i:i + chunk_size] = chunk_output
             
         return output
 
 class AttentionProcessorForge:
-    """Memory-optimized attention processor"""
+    """Memory-optimized attention processor with better error handling"""
+    
     def __init__(self, config: Optional[AttentionConfig] = None):
         self.config = config or AttentionConfig(
             dim_head=64,
@@ -639,18 +870,22 @@ class AttentionProcessorForge:
             dtype=torch.float32
         )
         self.attention = AttentionFactory.create(self.config)
-        self._attention_cache = {}
-        self._last_clear_time = time.time()
-        self._cache_lifetime = 300  # Clear cache every 5 minutes
-        self.use_spiral = True  # Add spiral attention flag
+        self.use_spiral = True
         
-    def _maybe_clear_cache(self):
-        current_time = time.time()
-        if current_time - self._last_clear_time > self._cache_lifetime:
-            self._attention_cache.clear()
-            clear_attention_caches()
-            self._last_clear_time = current_time
-    
+    def _process_attention_safely(self, *args, **kwargs) -> Tensor:
+        """Process attention with proper error handling"""
+        try:
+            return self._process_attention(*args, **kwargs)
+        except MemoryError as e:
+            logger.warning(f"Memory error in attention processing: {e}")
+            # Try to free memory and retry
+            cache_manager.clear_all()
+            memory_management.soft_empty_cache(force=True)
+            return self._process_attention(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in attention processing: {e}")
+            raise AttentionError(f"Attention processing failed: {str(e)}") from e
+            
     @torch.inference_mode()
     def __call__(self, attn: Any, hidden_states: Tensor,
                  encoder_hidden_states: Optional[Tensor] = None,
@@ -780,3 +1015,23 @@ class AttentionProcessorForge:
         
         hidden_states = attn.to_out[0](hidden_states)
         return hidden_states / attn.rescale_output_factor
+
+# Only define base classes and interfaces here
+# ...existing AttentionBase, AttentionConfig, etc...
+
+# Move actual implementations to separate files
+from .attention_impl import (
+    XFormersAttention, 
+    PyTorchAttention,
+    SplitAttention,
+    SubQuadraticAttention
+)
+
+# Export only what's needed
+__all__ = [
+    'AttentionFactory',
+    'AttentionBase',
+    'AttentionConfig',
+    'BackendConfig',
+    'AttentionProcessorForge'
+]

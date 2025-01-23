@@ -191,27 +191,39 @@ class VAE:
         return output.movedim(1, -1)
 
     def encode_inner(self, pixel_samples):
-        if memory_management.VAE_ALWAYS_TILED:
-            return self.encode_tiled(pixel_samples)
-
-        regulation = self.patcher.model_options.get("model_vae_regulation", None)
-
-        pixel_samples = pixel_samples.movedim(-1, 1)
-        try:
-            memory_used = self.memory_used_encode(pixel_samples.shape, self.vae_dtype)
-            memory_management.load_models_gpu([self.patcher], memory_required=memory_used)
-            free_memory = memory_management.get_free_memory(self.device)
-            batch_number = int(free_memory / memory_used)
-            batch_number = max(1, batch_number)
-            samples = torch.empty((pixel_samples.shape[0], self.latent_channels, round(pixel_samples.shape[2] // self.downscale_ratio), round(pixel_samples.shape[3] // self.downscale_ratio)), device=self.output_device)
-            for x in range(0, pixel_samples.shape[0], batch_number):
-                pixels_in = (2. * pixel_samples[x:x + batch_number] - 1.).to(self.vae_dtype).to(self.device)
-                samples[x:x + batch_number] = self.first_stage_model.encode(pixels_in, regulation).to(self.output_device).float()
-
-        except memory_management.OOM_EXCEPTION as e:
-            print("Warning: Ran out of memory when regular VAE encoding, retrying with tiled VAE encoding.")
-            samples = self.encode_tiled_(pixel_samples)
-
+        """Encode pixel space images to latent space
+        
+        Args:
+            pixel_samples: Images to encode [B, C, H, W] or [B, H, W, C]
+            
+        Returns:
+            torch.Tensor: Encoded latents
+        """
+        # Ensure channels are in correct dimension
+        if pixel_samples.shape[1] != 3:
+            # If channels last, move to channels first
+            if pixel_samples.shape[-1] in (3, 4):
+                # Take only first 3 channels if RGBA
+                pixel_samples = pixel_samples[..., :3]
+                pixel_samples = pixel_samples.permute(0, 3, 1, 2)
+            else:
+                raise ValueError(f"Unexpected channel dimension. Expected 3 channels, got shape {pixel_samples.shape}")
+            
+        # Normalize pixel values to [-1, 1] range
+        if pixel_samples.min() >= 0 and pixel_samples.max() <= 1:
+            pixel_samples = 2. * pixel_samples - 1.
+            
+        samples = torch.zeros(pixel_samples.shape[0], 
+                            self.latent_channels, 
+                            pixel_samples.shape[2] // self.downscale_ratio,
+                            pixel_samples.shape[3] // self.downscale_ratio,
+                            device=self.output_device)
+                            
+        batch_number = 1
+        for x in range(0, pixel_samples.shape[0], batch_number):
+            pixels_in = pixel_samples[x:x + batch_number].to(self.device)
+            samples[x:x + batch_number] = self.first_stage_model.encode(pixels_in).to(self.output_device).float()
+            
         return samples
 
     def encode(self, pixel_samples):

@@ -1,4 +1,6 @@
 import torch
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
 
 from huggingface_guess import model_list
 from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
@@ -10,6 +12,11 @@ from backend.args import dynamic_args
 from backend import memory_management
 from backend.nn.unet import Timestep
 
+@dataclass
+class PromptConfig:
+    width: int = 1024
+    height: int = 1024
+    is_negative_prompt: bool = False
 
 class StableDiffusionXL(ForgeDiffusionEngine):
     matched_guesses = [model_list.SDXL]
@@ -78,7 +85,15 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         self.text_processing_engine_g.clip_skip = clip_skip
 
     @torch.inference_mode()
-    def get_learned_conditioning(self, prompt: list[str]):
+    def get_learned_conditioning(self, prompt: Union[List[str], PromptConfig]) -> Dict[str, torch.Tensor]:
+        """Process prompt into conditioning tensors for image generation.
+        
+        Args:
+            prompt: List of prompt strings or PromptConfig object
+            
+        Returns:
+            Dict containing 'crossattn' and 'vector' tensors
+        """
         memory_management.load_model_gpu(self.forge_objects.clip.patcher)
 
         cond_l = self.text_processing_engine_l(prompt)
@@ -87,21 +102,25 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         if cond_l.dim() != 3 or cond_g.dim() != 3:
             raise ValueError("Invalid conditioning tensor dimensions")
 
-        width = getattr(prompt, 'width', 1024) or 1024
-        height = getattr(prompt, 'height', 1024) or 1024
+        # Get dimensions from prompt or use defaults
+        width = getattr(prompt, 'width', 1024)
+        height = getattr(prompt, 'height', 1024)
         is_negative_prompt = getattr(prompt, 'is_negative_prompt', False)
 
-        # Optimize tensor creation by using torch.empty and in-place assignment
-        embedding_values = torch.tensor(
-            [height, width, 0, 0, height, width],
-            device=clip_pooled.device
-        ).view(6, 1)
+        # Create embedding tensor directly on target device
+        embedding_values = torch.tensor([
+            height, width,    # Image dimensions
+            0, 0,            # Crop coordinates 
+            height, width    # Crop dimensions
+        ], device=clip_pooled.device).view(6, 1)
+        
         embedded = self.embedder(embedding_values)
         flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
 
         if is_negative_prompt and all(x == '' for x in prompt):
-            zeros = torch.zeros_like
-            clip_pooled, cond_l, cond_g = map(zeros, (clip_pooled, cond_l, cond_g))
+            clip_pooled = torch.zeros_like(clip_pooled)
+            cond_l = torch.zeros_like(cond_l) 
+            cond_g = torch.zeros_like(cond_g)
 
         return {
             'crossattn': torch.cat([cond_l, cond_g], dim=2),
