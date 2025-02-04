@@ -9,17 +9,17 @@ import einops
 from torch import Tensor
 import threading
 import weakref
-from functools import lru_cache, LRUCache
+from functools import lru_cache
 from abc import ABC, abstractmethod
-import logging
 from enum import Enum, auto
 
 from backend.args import args
 from backend import memory_management
 from backend.misc.sub_quadratic_attention import efficient_dot_product_attention
+from modules.logger import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Add xformers import with proper error handling
 try:
@@ -86,14 +86,17 @@ class CacheManager:
         
     def clear_all(self):
         """Clear all caches"""
-        for cache in self.caches.values():
+        logger.info("Clearing all attention caches")
+        for name, cache in self.caches.items():
             cache.clear()
+            logger.debug(f"Cache '{name}' cleared.")
             
     def check_memory_pressure(self):
         """Clear caches if memory pressure is high"""
         mem_free_total, mem_free_torch = memory_management.get_free_memory(
             torch.device('cuda'), True)
         if mem_free_torch / mem_free_total < 0.2:  # Clear if less than 20% free
+            logger.warning("High memory pressure detected. Clearing caches.")
             self.clear_all()
 
 class MemoryAwareCache:
@@ -122,6 +125,7 @@ class MemoryAwareCache:
             old_keys = [k for k, t in self.last_access_times.items() 
                        if current_time - t > self.cache_lifetime]
             for k in old_keys:
+                logger.debug(f"Removing expired cache key: {k}")
                 self.cache.pop(k, None)
                 self.last_access_times.pop(k, None)
                 
@@ -129,6 +133,8 @@ class MemoryAwareCache:
             if self._check_memory_usage():
                 self.cache[key] = value
                 self.last_access_times[key] = current_time
+            else:
+                logger.warning("Memory threshold exceeded, skipping cache set.")
             
     def clear(self) -> None:
         """Clear cache and timestamps"""
@@ -251,8 +257,10 @@ class LazyAttentionLoader:
         
         # Return cached implementation if backend hasn't changed
         if cls._loaded_implementation and cls._backend == current_backend:
+            logger.debug("Using cached attention implementation.")
             return cls._loaded_implementation
 
+        logger.info("Loading new attention implementation.")
         # Clear old implementation
         cls._loaded_implementation = None
         cls._backend = None
@@ -260,12 +268,16 @@ class LazyAttentionLoader:
         # Load new implementation based on backend
         if backend_config.xformers_enabled and XFORMERS_AVAILABLE:
             cls._loaded_implementation = XFormersAttention
+            logger.info("Selected xformers attention implementation.")
         elif backend_config.pytorch_attention_enabled:
             cls._loaded_implementation = PyTorchAttention
+            logger.info("Selected PyTorch attention implementation.")
         elif args.attention_split:
             cls._loaded_implementation = SplitAttention
+            logger.info("Selected split attention implementation.")
         else:
             cls._loaded_implementation = SubQuadraticAttention
+            logger.info("Selected sub-quadratic attention implementation.")
 
         cls._backend = current_backend
         return cls._loaded_implementation
@@ -1004,7 +1016,7 @@ class AttentionProcessorForge:
         """Handle large sequence attention using chunked computation"""
         query = attn.to_q(hidden_states)
         key = attn.to_k(encoder_hidden_states if encoder_hidden_states is not None else hidden_states)
-        value = attn.to_v(encoder_hidden_states if encoder_hidden_states is not None else hidden_states)
+        value = attn.to_v(hidden_states if encoder_hidden_states is not None else hidden_states)
         
         hidden_states = attention_memory_efficient(
             query, key, value,
