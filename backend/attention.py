@@ -12,14 +12,13 @@ import weakref
 from functools import lru_cache
 from abc import ABC, abstractmethod
 from enum import Enum, auto
+import logging
 
 from backend.args import args
 from backend import memory_management
 from backend.misc.sub_quadratic_attention import efficient_dot_product_attention
-from modules.logger import get_logger
-
 # Configure logging
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Add xformers import with proper error handling
 try:
