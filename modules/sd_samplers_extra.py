@@ -32,10 +32,14 @@ def restart_sampler(
     extra_args = {} if extra_args is None else extra_args
     
     def heun_step(x: torch.Tensor, old_sigma: float, new_sigma: float, step_id: int) -> tuple[torch.Tensor, int]:
-        denoised = model(x, old_sigma, **extra_args)
-        d = to_d(x, old_sigma, denoised)
+        # Convert scalar sigmas to tensors and ensure they're at least 1D
+        old_sigma_t = torch.as_tensor(old_sigma, device=x.device).view(1)
+        new_sigma_t = torch.as_tensor(new_sigma, device=x.device).view(1)
+        
+        denoised = model(x, old_sigma_t, **extra_args)
+        d = to_d(x, old_sigma_t, denoised)
         if callback is not None:
-            callback({'x': x, 'i': step_id, 'sigma': new_sigma, 'sigma_hat': old_sigma, 'denoised': denoised})
+            callback({'x': x, 'i': step_id, 'sigma': new_sigma_t, 'sigma_hat': old_sigma_t, 'denoised': denoised})
         
         dt = new_sigma - old_sigma
         if new_sigma == 0:
@@ -43,8 +47,8 @@ def restart_sampler(
         else:
             # Heun's method
             x_2 = x.addcmul(d, dt)
-            denoised_2 = model(x_2, new_sigma, **extra_args)
-            d_2 = to_d(x_2, new_sigma, denoised_2)
+            denoised_2 = model(x_2, new_sigma_t, **extra_args)
+            d_2 = to_d(x_2, new_sigma_t, denoised_2)
             d_prime = (d + d_2) / 2
             x.add_(d_prime * dt)
         return x, step_id + 1

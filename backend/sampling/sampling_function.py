@@ -148,106 +148,118 @@ def compute_cond_indices(cond_or_uncond, sigmas):
 
 
 def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
+    # Initialize output tensors
     out_cond = torch.zeros_like(x_in)
-    out_count = torch.ones_like(x_in) * 1e-37
-
     out_uncond = torch.zeros_like(x_in)
-    out_uncond_count = torch.ones_like(x_in) * 1e-37
+    out_count = torch.ones_like(x_in) * 1e-37
+    out_uncond_count = out_count.clone()
 
-    COND = 0
-    UNCOND = 1
-    to_run = [(get_area_and_mult(x, x_in, timestep), COND) for x in cond if get_area_and_mult(x, x_in, timestep) is not None]
+    # Early exit if no conditions
+    if not cond and not uncond:
+        return out_cond, out_uncond
+
+    # Prepare conditions list
+    COND, UNCOND = 0, 1
+    to_run = []
+    for x in cond:
+        if result := get_area_and_mult(x, x_in, timestep):
+            to_run.append((result, COND))
     if uncond is not None:
-        to_run += [(get_area_and_mult(x, x_in, timestep), UNCOND) for x in uncond if get_area_and_mult(x, x_in, timestep) is not None]
+        for x in uncond:
+            if result := get_area_and_mult(x, x_in, timestep):
+                to_run.append((result, UNCOND))
 
     while to_run:
+        # Batch preparation
         first = to_run[0]
-        first_shape = first[0][0].shape
-        to_batch_temp = [x for x in range(len(to_run)) if can_concat_cond(to_run[x][0], first[0])]
-        to_batch_temp.reverse()
-        to_batch = to_batch_temp[:1]
+        first_shape = first[0].input_x.shape
+        to_batch = [0]  # Start with at least one item
 
-        if memory_management.signal_empty_cache:
-            memory_management.soft_empty_cache()
+        # Find compatible conditions for batching
+        if len(to_run) > 1:
+            free_memory = memory_management.get_free_memory(x_in.device)
+            
+            # Memory warning check
+            if (not args.disable_gpu_warning) and x_in.device.type == 'cuda':
+                free_memory_mb = free_memory / (1024.0 * 1024.0)
+                if free_memory_mb < 1536.0:
+                    _log_low_gpu_memory_warning(free_memory_mb, 1536.0)
 
-        free_memory = memory_management.get_free_memory(x_in.device)
-        if (not args.disable_gpu_warning) and x_in.device.type == 'cuda':
-            free_memory_mb = free_memory / (1024.0 * 1024.0)
-            safe_memory_mb = 1536.0
-            if free_memory_mb < safe_memory_mb:
-                _extracted_from_calc_cond_uncond_batch_46(free_memory_mb, safe_memory_mb)
+            # Find maximum possible batch size
+            compatible_indices = [i for i in range(1, len(to_run)) 
+                               if can_concat_cond(to_run[i][0], first[0])]
+            
+            for batch_size in range(2, len(compatible_indices) + 2):
+                input_shape = [batch_size * first_shape[0]] + list(first_shape)[1:]
+                if model.memory_required(input_shape) >= free_memory:
+                    break
+                to_batch = [0] + compatible_indices[:batch_size-1]
 
-        for i in range(1, len(to_batch_temp) + 1):
-            batch_amount = to_batch_temp[:len(to_batch_temp) // i]
-            input_shape = [len(batch_amount) * first_shape[0]] + list(first_shape)[1:]
-            if model.memory_required(input_shape) < free_memory:
-                to_batch = batch_amount
-                break
+        # Extract batch data
+        batch = [to_run.pop(i) for i in sorted(to_batch, reverse=True)]
+        input_x = torch.cat([p[0].input_x for p in batch])
+        mult = [p[0].mult for p in batch]
+        area = [p[0].area for p in batch]
+        cond_or_uncond = [p[1] for p in batch]
+        
+        # Get control and patches from first item
+        control = batch[0][0].control
+        patches = batch[0][0].patches
 
-        input_x, mult, c, cond_or_uncond, area, control, patches = [], [], [], [], [], None, None
-        for x in to_batch:
-            o = to_run.pop(x)
-            p = o[0]
-            input_x.append(p.input_x)
-            mult.append(p.mult)
-            c.append(p.conditioning)
-            area.append(p.area)
-            cond_or_uncond.append(o[1])
-            control = p.control
-            patches = p.patches
-
-        batch_chunks = len(cond_or_uncond)
-        input_x = torch.cat(input_x)
-        c = cond_cat(c)
-        timestep_ = torch.cat([timestep] * batch_chunks)
-
+        # Prepare model inputs - ensure timestep is at least 1D
+        batch_chunks = len(batch)
+        timestep_ = (timestep.unsqueeze(0) if timestep.ndim == 0 else timestep)
+        timestep_ = torch.cat([timestep_] * batch_chunks)
+        
+        # Merge conditioning
+        c = cond_cat([p[0].conditioning for p in batch])
+        
+        # Setup transformer options
         transformer_options = model_options.get('transformer_options', {}).copy()
         if patches is not None:
             transformer_options["patches"] = {**transformer_options.get("patches", {}), **patches}
-
+            
         transformer_options.update({
-            "cond_or_uncond": cond_or_uncond[:],
+            "cond_or_uncond": cond_or_uncond,
             "sigmas": timestep,
             "cond_mark": compute_cond_mark(cond_or_uncond=cond_or_uncond, sigmas=timestep),
             "cond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[0],
             "uncond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[1]
         })
-
         c['transformer_options'] = transformer_options
 
+        # Handle control if present
         if control is not None:
             p = control
             while p is not None:
                 p.transformer_options = transformer_options
                 p = p.previous_controlnet
-            control_cond = c.copy()
-            c['control'] = control.get_control(input_x, timestep_, control_cond, len(cond_or_uncond))
+            c['control'] = control.get_control(input_x, timestep_, c.copy(), batch_chunks)
             c['control_model'] = control
 
-        if 'model_function_wrapper' in model_options:
-            output = model_options['model_function_wrapper'](model.apply_model, {"input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": cond_or_uncond}).chunk(batch_chunks)
-        else:
-            output = model.apply_model(input_x, timestep_, **c).chunk(batch_chunks)
-        del input_x
+        # Run model
+        output = (model_options['model_function_wrapper'](model.apply_model, 
+                 {"input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": cond_or_uncond})
+                 if 'model_function_wrapper' in model_options else
+                 model.apply_model(input_x, timestep_, **c)).chunk(batch_chunks)
+        del input_x, c
 
-        for o in range(batch_chunks):
-            if cond_or_uncond[o] == COND:
-                out_cond[:, :, area[o][2]:area[o][0] + area[o][2], area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
-                out_count[:, :, area[o][2]:area[o][0] + area[o][2], area[o][3]:area[o][1] + area[o][3]] += mult[o]
-            else:
-                out_uncond[:, :, area[o][2]:area[o][0] + area[o][2], area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
-                out_uncond_count[:, :, area[o][2]:area[o][0] + area[o][2], area[o][3]:area[o][1] + area[o][3]] += mult[o]
-        del mult
+        # Accumulate results
+        for i, (out, m, a) in enumerate(zip(output, mult, area)):
+            target = (out_cond, out_count) if cond_or_uncond[i] == COND else (out_uncond, out_uncond_count)
+            target[0][:, :, a[2]:a[0] + a[2], a[3]:a[1] + a[3]] += out * m
+            target[1][:, :, a[2]:a[0] + a[2], a[3]:a[1] + a[3]] += m
+        del output, mult
 
+    # Normalize results
     out_cond /= out_count
-    del out_count
     out_uncond /= out_uncond_count
-    del out_uncond_count
+    del out_count, out_uncond_count
+    
     return out_cond, out_uncond
 
 
-# TODO Rename this here and in `calc_cond_uncond_batch`
-def _extracted_from_calc_cond_uncond_batch_46(free_memory_mb, safe_memory_mb):
+def _log_low_gpu_memory_warning(free_memory_mb, safe_memory_mb):
     print(f"\n\n----------------------")
     print(f"[Low GPU VRAM Warning] Your current GPU free memory is {free_memory_mb:.2f} MB for this diffusion iteration.")
     print(f"[Low GPU VRAM Warning] This number is lower than the safe value of {safe_memory_mb:.2f} MB.")
