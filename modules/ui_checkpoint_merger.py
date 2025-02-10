@@ -4,6 +4,7 @@ import gradio as gr
 from modules import sd_models, sd_vae, errors, extras, call_queue
 from modules.ui_components import FormRow
 from modules.ui_common import create_refresh_button
+from backend.operations import compress_weights_superperm
 
 
 def update_interp_description(value):
@@ -14,6 +15,16 @@ def update_interp_description(value):
         "Add difference": interp_description_css.format("The difference between the last two models will be added to the first. Requires three models; A, B and C. The result is calculated as A + (B - C) * M")
     }
     return interp_descriptions[value]
+
+
+def compress_checkpoint_weights(checkpoint):
+    """
+    Iterate over all tensors in the checkpoint and compress them using superpermutation.
+    """
+    for key, tensor in checkpoint.items():
+        if hasattr(tensor, "ndim") and tensor.ndim > 0:
+            checkpoint[key] = compress_weights_superperm(tensor)
+    return checkpoint
 
 
 def modelmerger(*args):

@@ -146,6 +146,7 @@
 
 .forge-toolbar-range {
     -webkit-appearance: none;
+    appearance: none;
     height: 4px;
     border-radius: 2px;
     background: #4a4a4a;
@@ -173,8 +174,8 @@
     display: none;
     width: 80px;
     height: 80px;
+    /* mix-blend-mode: difference; */ /* Removing this line */
     transition: width 0.2s, height 0.2s;
-    mix-blend-mode: difference;
 }
 
 .forge-no-select {

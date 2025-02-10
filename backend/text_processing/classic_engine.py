@@ -425,7 +425,7 @@ class ClassicTextProcessingEngine:
         # Set up emphasis inputs
         self.emphasis.tokens = tokens_list
         self.emphasis.multipliers = emphasis_multipliers
-        self.emphasis.z = z.clone()  # Work on a copy
+        self.emphasis.z = z  # Use original tensor
         
         # Apply emphasis and get result
         self.emphasis.after_transformers()

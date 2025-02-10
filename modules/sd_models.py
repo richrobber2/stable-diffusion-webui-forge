@@ -22,7 +22,7 @@ from backend.loader import forge_loader
 from backend import memory_management
 from backend.args import dynamic_args
 from backend.utils import load_torch_file
-
+from backend.superperm_hooks import apply_superperm_to_model
 
 model_dir = "Stable-diffusion"
 model_path = os.path.abspath(os.path.join(paths.models_path, model_dir))
@@ -444,7 +444,9 @@ def get_obj_from_str(string, reload=False):
 
 
 def load_model(checkpoint_info=None, already_loaded_state_dict=None):
-    pass
+    from backend.model_loader import load_model as backend_load_model
+    # Pass use_superperm=True to apply superpermutation transformation
+    return backend_load_model(checkpoint_info=checkpoint_info, already_loaded_state_dict=already_loaded_state_dict, use_superperm=True)
 
 
 def reuse_model_from_already_loaded(sd_model, checkpoint_info, timer):
@@ -531,3 +533,10 @@ def forge_model_reload():
     model_data.forge_hash = current_hash
 
     return sd_model, True
+
+
+def load_model(model_path, use_superperm=False, **kwargs):
+    model = modelloader.load_model(model_path, **kwargs)
+    if use_superperm:
+        model = apply_superperm_to_model(model)
+    return model

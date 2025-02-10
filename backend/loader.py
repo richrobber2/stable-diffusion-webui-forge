@@ -28,6 +28,7 @@ possible_models = [StableDiffusion, StableDiffusion2, StableDiffusionXL, Flux]
 logging.getLogger("diffusers").setLevel(logging.ERROR)
 dir_path = os.path.dirname(__file__)
 
+QUANT_FORMATS = ['nf4', 'fp4', 'gguf']
 
 def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_path, state_dict):
     """
@@ -76,7 +77,7 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             return _extracted_from_load_huggingface_component_88(guess, state_dict, model_loader)
 
     # If none of the conditions matched
-    print(f'Skipped: {component_name} = {lib_name}.{cls_name}')
+    logging.debug(f'Skipped: {component_name} = {lib_name}.{cls_name}')
     return None
 
 
@@ -95,15 +96,15 @@ def _decide_storage_dtype_and_log(state_dict, default_dtype, component_name):
     """
     state_dict_dtype = memory_management.state_dict_dtype(state_dict)
     # If special quantization is detected
-    special_types = [torch.float8_e4m3fn, torch.float8_e5m2, 'nf4', 'fp4', 'gguf']
+    special_types = [torch.float8_e4m3fn, torch.float8_e5m2] + QUANT_FORMATS
     if state_dict_dtype in special_types:
-        print(f'Using Detected {component_name} Data Type: {state_dict_dtype}')
+        logging.info(f'Using Detected {component_name} Data Type: {state_dict_dtype}')
         # For gguf, print additional info
         if state_dict_dtype == 'gguf':
             beautiful_print_gguf_state_dict_statics(state_dict)
         return state_dict_dtype
     else:
-        print(f'Using Default {component_name} Data Type: {default_dtype}')
+        logging.info(f'Using Default {component_name} Data Type: {default_dtype}')
         return default_dtype
 
 
@@ -147,8 +148,7 @@ def _extracted_from_load_huggingface_component_38(state_dict, config_path, cls_n
     storage_dtype = _decide_storage_dtype_and_log(state_dict, default_dtype, 'T5')
 
     # Determine if we use bnb quantization
-    quant_formats = ['nf4', 'fp4', 'gguf']
-    if storage_dtype in quant_formats:
+    if storage_dtype in QUANT_FORMATS:
         # No manual cast in these quant modes
         model = _init_model_with_forge(config, memory_management.cpu, memory_management.text_encoder_dtype(), manual_cast_enabled=False, bnb_dtype=storage_dtype, model_loader=IntegratedT5)
     else:
@@ -207,8 +207,7 @@ def _extracted_from_load_huggingface_component_88(guess, state_dict, model_loade
     computation_dtype = memory_management.get_computation_dtype(load_device, parameters=state_dict_parameters, supported_dtypes=guess.supported_inference_dtypes)
     offload_device = memory_management.unet_offload_device()
 
-    quant_formats = ['nf4', 'fp4', 'gguf']
-    if storage_dtype in quant_formats:
+    if storage_dtype in QUANT_FORMATS:
         # When using quantized formats
         initial_device = memory_management.unet_inital_load_device(parameters=state_dict_parameters, dtype=computation_dtype)
         model = _init_model_with_forge(unet_config, initial_device, computation_dtype, manual_cast_enabled=False, bnb_dtype=storage_dtype, model_loader=model_loader)
@@ -318,7 +317,11 @@ def split_state_dict(sd, additional_state_dicts: list = None):
     sd = load_torch_file(sd)
     sd = preprocess_state_dict(sd)
     guess = huggingface_guess.guess(sd)
-
+    # NEW: Always compress tensors in the loaded state dict.
+    from backend.operations import compress_weights_superperm
+    for k, tensor in sd.items():
+        if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+            sd[k] = compress_weights_superperm(tensor)
     if isinstance(additional_state_dicts, list):
         for asd in additional_state_dicts:
             asd = load_torch_file(asd)
@@ -371,6 +374,7 @@ def get_state_dicts_and_config(sd, additional_state_dicts):
     try:
         return split_state_dict(sd, additional_state_dicts=additional_state_dicts)
     except Exception as e:
+        logging.exception("Error splitting state dict:")
         raise ValueError(f'Failed to recognize model type! Error: {e}')
 
 
@@ -444,5 +448,5 @@ def get_model(estimated_config, huggingface_components):
         if any(isinstance(estimated_config, x) for x in M.matched_guesses):
             return M(estimated_config=estimated_config, huggingface_components=huggingface_components)
 
-    print('Failed to recognize model type!')
+    logging.error('Failed to recognize model type!')
     return None

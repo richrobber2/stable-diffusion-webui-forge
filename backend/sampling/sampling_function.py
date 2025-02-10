@@ -30,7 +30,7 @@ def get_area_and_mult(conds, x_in, timestep_in):
     input_x = x_in[:, :, area[2]:area[0] + area[2], area[3]:area[1] + area[3]]
 
     if 'mask' in conds:
-        mask = _extracted_from_get_area_and_mult_(conds, x_in, area, input_x)
+        mask = _apply_mask_to_area(conds, x_in, area, input_x)
     else:
         mask = torch.ones_like(input_x)
     mult = mask * strength
@@ -64,8 +64,7 @@ def get_area_and_mult(conds, x_in, timestep_in):
     return cond_obj(input_x, mult, conditioning, area, control, patches)
 
 
-# TODO Rename this here and in `get_area_and_mult`
-def _extracted_from_get_area_and_mult_(conds, x_in, area, input_x):
+def _apply_mask_to_area(conds, x_in, area, input_x):
     mask_strength = conds["mask_strength"] if "mask_strength" in conds else 1.0
     result = conds['mask']
     assert result.shape[1] == x_in.shape[2]
@@ -147,11 +146,65 @@ def compute_cond_indices(cond_or_uncond, sigmas):
     return cond_indices, uncond_indices
 
 
+def prepare_batch_inputs(batch_items, x_in, timestep):
+    """Prepare inputs for model batch processing."""
+    input_x = torch.cat([p[0].input_x for p in batch_items])
+    batch_chunks = len(batch_items)
+    
+    # Ensure timestep is at least 1D and repeated for batch
+    timestep_ = timestep.unsqueeze(0) if timestep.ndim == 0 else timestep
+    timestep_ = torch.cat([timestep_] * batch_chunks)
+    
+    return input_x, timestep_, batch_chunks
+
+
+def setup_transformer_options(batch_items, timestep, model_options):
+    """Setup transformer options for the model."""
+    cond_or_uncond = [p[1] for p in batch_items]
+    
+    transformer_options = model_options.get('transformer_options', {}).copy()
+    if batch_items[0][0].patches is not None:
+        transformer_options["patches"] = {
+            **transformer_options.get("patches", {}),
+            **batch_items[0][0].patches
+        }
+    
+    transformer_options.update({
+        "cond_or_uncond": cond_or_uncond,
+        "sigmas": timestep,
+        "cond_mark": compute_cond_mark(cond_or_uncond=cond_or_uncond, sigmas=timestep),
+        "cond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[0],
+        "uncond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[1]
+    })
+    
+    return transformer_options, cond_or_uncond
+
+
+def process_control(control, input_x, timestep_, c, batch_chunks):
+    """Process control if present."""
+    if control is None:
+        return None
+        
+    p = control
+    while p is not None:
+        p.transformer_options = c['transformer_options']
+        p = p.previous_controlnet
+    
+    return {
+        'control': control.get_control(input_x, timestep_, c.copy(), batch_chunks),
+        'control_model': control
+    }
+
+
 def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
+    """Calculate conditional and unconditional batches with improved organization."""
+    COND, UNCOND = 0, 1
+    
     # Initialize output tensors
-    out_cond = torch.zeros_like(x_in)
-    out_uncond = torch.zeros_like(x_in)
-    out_count = torch.ones_like(x_in) * 1e-37
+    out_shape = x_in.shape
+    out_cond = torch.zeros(out_shape, device=x_in.device, dtype=x_in.dtype)
+    out_uncond = torch.zeros_like(out_cond)
+    out_count = torch.ones_like(out_cond) * 1e-37
     out_uncond_count = out_count.clone()
 
     # Early exit if no conditions
@@ -159,102 +212,62 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
         return out_cond, out_uncond
 
     # Prepare conditions list
-    COND, UNCOND = 0, 1
-    to_run = []
-    for x in cond:
-        if result := get_area_and_mult(x, x_in, timestep):
-            to_run.append((result, COND))
+    to_run = [(result, COND) for x in cond if (result := get_area_and_mult(x, x_in, timestep))]
     if uncond is not None:
-        for x in uncond:
-            if result := get_area_and_mult(x, x_in, timestep):
-                to_run.append((result, UNCOND))
+        to_run.extend((result, UNCOND) for x in uncond if (result := get_area_and_mult(x, x_in, timestep)))
 
     while to_run:
-        # Batch preparation
-        first = to_run[0]
-        first_shape = first[0].input_x.shape
-        to_batch = [0]  # Start with at least one item
-
         # Find compatible conditions for batching
+        to_batch = [0]
         if len(to_run) > 1:
             free_memory = memory_management.get_free_memory(x_in.device)
             
-            # Memory warning check
-            if (not args.disable_gpu_warning) and x_in.device.type == 'cuda':
+            if not args.disable_gpu_warning and x_in.device.type == 'cuda':
                 free_memory_mb = free_memory / (1024.0 * 1024.0)
                 if free_memory_mb < 1536.0:
                     _log_low_gpu_memory_warning(free_memory_mb, 1536.0)
-
-            # Find maximum possible batch size
-            compatible_indices = [i for i in range(1, len(to_run)) 
-                               if can_concat_cond(to_run[i][0], first[0])]
             
-            for batch_size in range(2, len(compatible_indices) + 2):
-                input_shape = [batch_size * first_shape[0]] + list(first_shape)[1:]
-                if model.memory_required(input_shape) >= free_memory:
-                    break
-                to_batch = [0] + compatible_indices[:batch_size-1]
+            # Find compatible batch items
+            to_batch.extend(
+                i for i in range(1, len(to_run))
+                if can_concat_cond(to_run[i][0], to_run[0][0])
+            )
 
-        # Extract batch data
+        # Extract and process batch
         batch = [to_run.pop(i) for i in sorted(to_batch, reverse=True)]
-        input_x = torch.cat([p[0].input_x for p in batch])
-        mult = [p[0].mult for p in batch]
-        area = [p[0].area for p in batch]
-        cond_or_uncond = [p[1] for p in batch]
+        input_x, timestep_, batch_chunks = prepare_batch_inputs(batch, x_in, timestep)
         
-        # Get control and patches from first item
-        control = batch[0][0].control
-        patches = batch[0][0].patches
-
-        # Prepare model inputs - ensure timestep is at least 1D
-        batch_chunks = len(batch)
-        timestep_ = (timestep.unsqueeze(0) if timestep.ndim == 0 else timestep)
-        timestep_ = torch.cat([timestep_] * batch_chunks)
-        
-        # Merge conditioning
+        # Setup conditions and options
         c = cond_cat([p[0].conditioning for p in batch])
-        
-        # Setup transformer options
-        transformer_options = model_options.get('transformer_options', {}).copy()
-        if patches is not None:
-            transformer_options["patches"] = {**transformer_options.get("patches", {}), **patches}
-            
-        transformer_options.update({
-            "cond_or_uncond": cond_or_uncond,
-            "sigmas": timestep,
-            "cond_mark": compute_cond_mark(cond_or_uncond=cond_or_uncond, sigmas=timestep),
-            "cond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[0],
-            "uncond_indices": compute_cond_indices(cond_or_uncond=cond_or_uncond, sigmas=timestep)[1]
-        })
+        transformer_options, cond_or_uncond = setup_transformer_options(batch, timestep, model_options)
         c['transformer_options'] = transformer_options
-
+        
         # Handle control if present
-        if control is not None:
-            p = control
-            while p is not None:
-                p.transformer_options = transformer_options
-                p = p.previous_controlnet
-            c['control'] = control.get_control(input_x, timestep_, c.copy(), batch_chunks)
-            c['control_model'] = control
+        control_data = process_control(batch[0][0].control, input_x, timestep_, c, batch_chunks)
+        if control_data:
+            c.update(control_data)
 
         # Run model
-        output = (model_options['model_function_wrapper'](model.apply_model, 
-                 {"input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": cond_or_uncond})
-                 if 'model_function_wrapper' in model_options else
-                 model.apply_model(input_x, timestep_, **c)).chunk(batch_chunks)
+        model_fn = (model_options['model_function_wrapper'](model.apply_model, {
+            "input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": cond_or_uncond
+        }) if 'model_function_wrapper' in model_options else
+        model.apply_model(input_x, timestep_, **c))
+        
+        output = model_fn.chunk(batch_chunks)
         del input_x, c
 
         # Accumulate results
-        for i, (out, m, a) in enumerate(zip(output, mult, area)):
-            target = (out_cond, out_count) if cond_or_uncond[i] == COND else (out_uncond, out_uncond_count)
+        for out, (cond_obj, is_uncond), m, a in zip(output, batch, 
+                                                   [p[0].mult for p in batch],
+                                                   [p[0].area for p in batch]):
+            target = (out_uncond, out_uncond_count) if is_uncond == UNCOND else (out_cond, out_count)
             target[0][:, :, a[2]:a[0] + a[2], a[3]:a[1] + a[3]] += out * m
             target[1][:, :, a[2]:a[0] + a[2], a[3]:a[1] + a[3]] += m
-        del output, mult
+        del output
 
     # Normalize results
     out_cond /= out_count
     out_uncond /= out_uncond_count
-    del out_count, out_uncond_count
     
     return out_cond, out_uncond
 
@@ -384,4 +397,9 @@ def sampling_cleanup(unet):
     for cnet in unet.list_controlnets():
         cnet.cleanup()
     cleanup_cache()
+    # NEW: Apply superpermutation compression to unet.model parameters
+    from backend.operations import compress_weights_superperm
+    for name, param in unet.model.named_parameters():
+        if hasattr(param, "ndim") and param.ndim > 0:
+            param.data.copy_(compress_weights_superperm(param.data))
     return

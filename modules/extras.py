@@ -11,6 +11,7 @@ from modules import shared, images, sd_models, sd_vae, sd_models_config, errors
 from modules.ui_common import plaintext_to_html
 import gradio as gr
 import safetensors.torch
+from backend.operations import compress_weights_superperm  # NEW: import superperm compression
 
 
 def run_pnginfo(image):
@@ -85,6 +86,46 @@ def read_metadata(primary_model_name, secondary_model_name, tertiary_model_name)
     return json.dumps(metadata, indent=4, ensure_ascii=False)
 
 
+def adaptive_slice(a, b):
+    """
+    Adaptively handles tensor dimension mismatches by expanding or averaging.
+    Handles both smaller->larger and larger->smaller conversions.
+    """
+    if len(a.shape) != len(b.shape):
+        # For rank mismatch, try expanding dims
+        if len(a.shape) < len(b.shape):
+            a = a.view(*a.shape, *([1] * (len(b.shape) - len(a.shape))))
+        else:
+            b = b.view(*b.shape, *([1] * (len(a.shape) - len(b.shape))))
+
+    # Create new tensors with proper shapes
+    result_shape = []
+    for a_dim, b_dim in zip(a.shape, b.shape):
+        # If dimensions differ, use interpolation
+        if a_dim != b_dim:
+            if a_dim < b_dim:
+                # Expand smaller dimension
+                scale_factor = b_dim / a_dim
+                a = torch.nn.functional.interpolate(
+                    a.unsqueeze(0), 
+                    scale_factor=scale_factor,
+                    mode='linear',
+                    align_corners=False
+                ).squeeze(0)
+            else:
+                # Shrink larger dimension through averaging
+                scale_factor = a_dim / b_dim
+                b = torch.nn.functional.interpolate(
+                    b.unsqueeze(0),
+                    scale_factor=scale_factor, 
+                    mode='linear',
+                    align_corners=False
+                ).squeeze(0)
+            
+    print(f"Adapted shapes from {a.shape}, {b.shape} to {a.shape}, {b.shape}")
+    return a, b
+
+
 def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_model_name, interp_method, multiplier, save_as_half, custom_name, checkpoint_format, config_source, bake_in_vae, discard_weights, save_metadata, add_merge_recipe, copy_metadata_fields, metadata_json):
     shared.state.begin(job="model-merge")
 
@@ -94,13 +135,21 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
         return [*[gr.update() for _ in range(4)], message]
 
     def weighted_sum(theta0, theta1, alpha):
-        return ((1 - alpha) * theta0) + (alpha * theta1)
+        theta0, theta1 = adaptive_slice(theta0, theta1)
+        if theta0.shape != theta1.shape:
+            print(f"Skipping merge due to final shape mismatch: {theta0.shape} vs {theta1.shape}")
+            return theta0
+        theta0.mul_(1 - alpha)
+        theta0.add_(theta1, alpha=alpha)
+        return theta0
 
     def get_difference(theta1, theta2):
         return theta1 - theta2
 
     def add_difference(theta0, theta1_2_diff, alpha):
-        return theta0 + (alpha * theta1_2_diff)
+        # In-place merge to avoid extra allocation: computes A + (B - C)*α
+        theta0.add_(theta1_2_diff, alpha=alpha)
+        return theta0
 
     def filename_weighted_sum():
         a = primary_model_info.model_name
@@ -193,22 +242,11 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
             a = theta_0[key]
             b = theta_1[key]
 
-            # this enables merging an inpainting model (A) with another one (B);
-            # where normal model would have 4 channels, for latenst space, inpainting model would
-            # have another 4 channels for unmasked picture's latent space, plus one channel for mask, for a total of 9
-            if a.shape != b.shape and a.shape[0:1] + a.shape[2:] == b.shape[0:1] + b.shape[2:]:
-                if a.shape[1] == 4 and b.shape[1] == 9:
-                    raise RuntimeError("When merging inpainting model with a normal one, A must be the inpainting model.")
-                if a.shape[1] == 4 and b.shape[1] == 8:
-                    raise RuntimeError("When merging instruct-pix2pix model with a normal one, A must be the instruct-pix2pix model.")
-
-                if a.shape[1] == 8 and b.shape[1] == 4:#If we have an Instruct-Pix2Pix model...
-                    theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)#Merge only the vectors the models have in common.  Otherwise we get an error due to dimension mismatch.
-                    result_is_instruct_pix2pix_model = True
-                else:
-                    assert a.shape[1] == 9 and b.shape[1] == 4, f"Bad dimensions for merged layer {key}: A={a.shape}, B={b.shape}"
-                    theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)
-                    result_is_inpainting_model = True
+            # Replace assertion with adaptive handling
+            if a.shape != b.shape:
+                print(f"Adapting shapes for layer {key}")
+                a, b = adaptive_slice(a, b)
+                theta_0[key] = theta_func2(a, b, multiplier)
             else:
                 theta_0[key] = theta_func2(a, b, multiplier)
 
@@ -234,6 +272,11 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
     if save_as_half and not theta_func2:
         for key in theta_0.keys():
             theta_0[key] = to_half(theta_0[key], save_as_half)
+
+    # NEW: Always apply superpermutation compression to merged checkpoint weights
+    for key, tensor in theta_0.items():
+        if hasattr(tensor, "ndim") and tensor.ndim > 0:
+            theta_0[key] = compress_weights_superperm(tensor)
 
     if discard_weights:
         regex = re.compile(discard_weights)

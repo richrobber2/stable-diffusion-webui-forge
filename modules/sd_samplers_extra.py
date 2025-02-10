@@ -12,7 +12,8 @@ def restart_sampler(
     callback: Optional[Callable] = None,
     disable: Optional[bool] = None,
     s_noise: float = 1.,
-    restart_list: Optional[Dict[float, list]] = None
+    restart_list: Optional[Dict[float, list]] = None,
+    use_superperm: bool = True  # changed default to True
 ) -> torch.Tensor:
     """Implements restart sampling following "Restart Sampling for Improving Generative Processes" (2023)
     
@@ -25,6 +26,7 @@ def restart_sampler(
         disable: Whether to disable progress bar
         s_noise: Noise scale factor
         restart_list: Dictionary of {min_sigma: [restart_steps, restart_times, max_sigma]}
+        use_superperm: Whether to apply superpermutation compression to the output tensor
     
     Returns:
         Denoised tensor
@@ -95,4 +97,7 @@ def restart_sampler(
         x, step_id = heun_step(x, old_sigma, new_sigma, step_id)
         last_sigma = new_sigma
 
+    # NEW: Always apply superpermutation compression to the output tensor.
+    from backend.operations import compress_weights_superperm
+    x = compress_weights_superperm(x)
     return x

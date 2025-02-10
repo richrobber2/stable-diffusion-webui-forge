@@ -11,6 +11,7 @@ from backend.text_processing.classic_engine import ClassicTextProcessingEngine
 from backend.args import dynamic_args
 from backend import memory_management
 from backend.nn.unet import Timestep
+from backend.text_processing.prompt_structs import PromptConfig, TextualPrompt
 
 @dataclass
 class PromptConfig:
@@ -85,39 +86,65 @@ class StableDiffusionXL(ForgeDiffusionEngine):
         self.text_processing_engine_g.clip_skip = clip_skip
 
     @torch.inference_mode()
-    def get_learned_conditioning(self, prompt: Union[List[str], PromptConfig]) -> Dict[str, torch.Tensor]:
+    def get_learned_conditioning(self, prompt: Union[List[str], List[PromptConfig]]) -> Dict[str, torch.Tensor]:
         """Process prompt into conditioning tensors for image generation.
         
         Args:
-            prompt: List of prompt strings or PromptConfig object
+            prompt: List of prompt strings or PromptConfig objects
             
         Returns:
             Dict containing 'crossattn' and 'vector' tensors
         """
         memory_management.load_model_gpu(self.forge_objects.clip.patcher)
 
-        cond_l = self.text_processing_engine_l(prompt)
-        cond_g, clip_pooled = self.text_processing_engine_g(prompt)
+        # Handle different prompt types
+        if isinstance(prompt, list) and isinstance(prompt[0], str):
+            # Convert list of strings to TextualPrompt
+            prompt = [TextualPrompt(text=p) for p in prompt]
+        elif not isinstance(prompt, list):
+            raise ValueError("Prompt must be a list of strings or PromptConfig objects")
+
+        cond_l_list = []
+        cond_g_list = []
+        clip_pooled_list = []
+
+        for p in prompt:
+            if isinstance(p, TextualPrompt):
+                cond_l = self.text_processing_engine_l([p.text])
+                cond_g, clip_pooled = self.text_processing_engine_g([p.text])
+                width, height = p.width, p.height
+                is_negative_prompt = p.is_negative_prompt
+            elif isinstance(p, PromptConfig):
+                cond_l = self.text_processing_engine_l([p.prompt])
+                cond_g, clip_pooled = self.text_processing_engine_g([p.prompt])
+                width, height = p.width, p.height
+                is_negative_prompt = p.is_negative_prompt
+            else:
+                raise ValueError(f"Unsupported prompt type: {type(p)}")
+
+            cond_l_list.append(cond_l)
+            cond_g_list.append(cond_g)
+            clip_pooled_list.append(clip_pooled)
+
+        cond_l = torch.cat(cond_l_list, dim=0)
+        cond_g = torch.cat(cond_g_list, dim=0)
+        clip_pooled = torch.cat(clip_pooled_list, dim=0)
 
         if cond_l.dim() != 3 or cond_g.dim() != 3:
             raise ValueError("Invalid conditioning tensor dimensions")
-
-        # Get dimensions from prompt or use defaults
-        width = getattr(prompt, 'width', 1024)
-        height = getattr(prompt, 'height', 1024)
-        is_negative_prompt = getattr(prompt, 'is_negative_prompt', False)
 
         # Create embedding tensor directly on target device
         embedding_values = torch.tensor([
             height, width,    # Image dimensions
             0, 0,            # Crop coordinates 
             height, width    # Crop dimensions
-        ], device=clip_pooled.device).view(6, 1)
+        ], device=clip_pooled.device, dtype=clip_pooled.dtype).view(6, 1)
         
         embedded = self.embedder(embedding_values)
         flat = embedded.view(1, -1).expand(clip_pooled.shape[0], -1)
 
-        if is_negative_prompt and all(x == '' for x in prompt):
+        # Streamline zeroing logic
+        if is_negative_prompt and all(isinstance(p, TextualPrompt) and p.text == '' for p in prompt):
             clip_pooled = torch.zeros_like(clip_pooled)
             cond_l = torch.zeros_like(cond_l) 
             cond_g = torch.zeros_like(cond_g)
@@ -134,8 +161,22 @@ class StableDiffusionXL(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_first_stage(self, x):
+        # Ensure channels are in correct dimension
+        if x.shape[1] != 3:
+            # If channels first and RGBA, convert to RGB
+            if x.shape[1] == 4:
+                x = x[:, :3, :, :]
+            # If channels last, move to channels first
+            elif x.shape[-1] in (3, 4):
+                # Take only first 3 channels if RGBA
+                x = x[..., :3]
+                x = x.permute(0, 3, 1, 2)
+            else:
+                raise ValueError(f"Unexpected channel dimension. Expected 3 or 4 channels, got shape {x.shape}")
+        
+        # Normalize pixel values to [0, 1] range
         x = x.movedim(1, -1)
-        x.mul_(0.5).add_(0.5)  # in-place operations
+        x = x * 0.5 + 0.5
         sample = self.forge_objects.vae.encode(x)
         return self.forge_objects.vae.first_stage_model.process_in(sample).to(x)
 

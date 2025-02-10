@@ -47,7 +47,7 @@ def check_python_version():
     else:
         supported_minors = [7, 8, 9, 10, 11]
 
-    if not (major == 3 and minor in supported_minors):
+    if major != 3 or minor not in supported_minors:
         import modules.errors
 
         modules.errors.print_error_explanation(f"""

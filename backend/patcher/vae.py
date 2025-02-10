@@ -218,12 +218,21 @@ class VAE:
                             pixel_samples.shape[2] // self.downscale_ratio,
                             pixel_samples.shape[3] // self.downscale_ratio,
                             device=self.output_device)
+        
+        try:                    
+            memory_used = self.memory_used_encode(pixel_samples.shape, self.vae_dtype)
+            memory_management.load_models_gpu([self.patcher], memory_required=memory_used)
+            free_memory = memory_management.get_free_memory(self.device)
+            batch_number = int(free_memory / memory_used)
+            batch_number = max(1, batch_number)
+
+            for x in range(0, pixel_samples.shape[0], batch_number):
+                pixels_in = pixel_samples[x:x + batch_number].to(self.device)
+                samples[x:x + batch_number] = self.first_stage_model.encode(pixels_in).to(self.output_device).float()
+        except memory_management.OOM_EXCEPTION as e:
+            print("Warning: Ran out of memory when regular VAE encoding, retrying with tiled VAE encoding.")
+            samples = self.encode_tiled_(pixel_samples)
                             
-        batch_number = 1
-        for x in range(0, pixel_samples.shape[0], batch_number):
-            pixels_in = pixel_samples[x:x + batch_number].to(self.device)
-            samples[x:x + batch_number] = self.first_stage_model.encode(pixels_in).to(self.output_device).float()
-            
         return samples
 
     def encode(self, pixel_samples):

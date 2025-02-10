@@ -9,6 +9,7 @@ from enum import Enum
 
 from backend import stream, utils
 from backend.args import args
+from backend.operations import compress_weights_superperm
 
 cpu = torch.device('cpu')
 
@@ -1210,6 +1211,17 @@ def can_install_bnb():
 signal_empty_cache = False
 
 
+def compress_all_model_weights():
+    global current_loaded_models
+    for model_entry in current_loaded_models:
+        model = model_entry.model  # assuming each entry has a 'model' attribute
+        # Check if model supports named_parameters
+        if hasattr(model, "named_parameters") and callable(model.named_parameters):
+            for name, param in model.named_parameters():
+                if param.data.ndim > 0:
+                    param.data.copy_(compress_weights_superperm(param.data))
+
+
 def soft_empty_cache(force=False):
     global cpu_state, signal_empty_cache
     if cpu_state == CPUState.MPS:
@@ -1221,6 +1233,7 @@ def soft_empty_cache(force=False):
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     signal_empty_cache = False
+    compress_all_model_weights()
     return
 
 

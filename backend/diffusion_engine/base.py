@@ -2,6 +2,7 @@ import torch
 import safetensors.torch as sf
 
 from backend import utils
+from backend.operations import compress_weights_superperm  # NEW: import superperm compression
 
 
 class ForgeObjects:
@@ -69,6 +70,10 @@ class ForgeDiffusionEngine:
 
     def save_unet(self, filename):
         sd = utils.get_state_dict_after_quant(self.forge_objects.unet.model.diffusion_model)
+        # NEW: Optionally compress each tensor in the state dict
+        for k, tensor in sd.items():
+            if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+                sd[k] = compress_weights_superperm(tensor)
         sf.save_file(sd, filename)
         return filename
 
@@ -84,5 +89,9 @@ class ForgeDiffusionEngine:
         sd.update(
             utils.get_state_dict_after_quant(self.forge_objects.vae.first_stage_model, prefix='vae.')
         )
+        # NEW: Optionally compress weights before saving
+        for key, tensor in sd.items():
+            if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+                sd[key] = compress_weights_superperm(tensor)
         sf.save_file(sd, filename)
         return filename

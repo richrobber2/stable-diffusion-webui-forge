@@ -135,17 +135,16 @@ def _init_spandrel_extra_archs() -> None:
 
 def load_spandrel_model(
     path: str | os.PathLike,
-    *,
+    * ,
     device: str | torch.device | None,
     prefer_half: bool = False,
     dtype: str | torch.dtype | None = None,
     expected_architecture: str | None = None,
+    use_superperm: bool = False      # NEW: new optional parameter
 ) -> spandrel.ModelDescriptor:
-    global _spandrel_extra_init_state
-
+    from backend.superperm_hooks import apply_superperm_to_model  # NEW: import superperm function
     import spandrel
     _init_spandrel_extra_archs()
-
     model_descriptor = spandrel.ModelLoader(device=device).load_from_file(str(path))
     arch = model_descriptor.architecture
     if expected_architecture and arch.name != expected_architecture:
@@ -162,6 +161,9 @@ def load_spandrel_model(
     if dtype:
         model_descriptor.model.to(dtype=dtype)
     model_descriptor.model.eval()
+    # NEW: Apply superpermutation reordering if enabled
+    if use_superperm:
+        model_descriptor.model = apply_superperm_to_model(model_descriptor.model)
     logger.debug(
         "Loaded %s from %s (device=%s, half=%s, dtype=%s)",
         arch, path, device, half, dtype,

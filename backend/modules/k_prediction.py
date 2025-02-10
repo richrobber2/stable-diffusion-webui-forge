@@ -21,7 +21,7 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
                 torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
         )
     elif schedule == "cosine":
-        betas = _extracted_from_make_beta_schedule_7(n_timestep, cosine_s)
+        betas = _calculate_beta_schedule(n_timestep, cosine_s)
     elif schedule == "sqrt_linear":
         betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64)
     elif schedule == "sqrt":
@@ -31,8 +31,7 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
     return betas
 
 
-# TODO Rename this here and in `make_beta_schedule`
-def _extracted_from_make_beta_schedule_7(n_timestep, cosine_s):
+def _calculate_beta_schedule(n_timestep, cosine_s):
     timesteps = (
             torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
     )

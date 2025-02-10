@@ -480,7 +480,7 @@ class T2IAdapter(ControlBase):
             return control_prev if control_prev is not None else None
 
         if self.cond_hint is None or x_noisy.shape[2] * 8 != self.cond_hint.shape[2] or x_noisy.shape[3] * 8 != self.cond_hint.shape[3]:
-            self._extracted_from_get_control_15(x_noisy)
+            self._prepare_cond_hint(x_noisy)
         if x_noisy.shape[0] != self.cond_hint.shape[0]:
             self.cond_hint = broadcast_image_to(self.cond_hint, x_noisy.shape[0], batched_number)
         if self.control_input is None:
@@ -507,8 +507,7 @@ class T2IAdapter(ControlBase):
             control_input = control_input[:-1]
         return self.control_merge(control_input, mid, control_prev, x_noisy.dtype)
 
-    # TODO Rename this here and in `get_control`
-    def _extracted_from_get_control_15(self, x_noisy):
+    def _prepare_cond_hint(self, x_noisy):
         if self.cond_hint is not None:
             del self.cond_hint
         self.control_input = None
@@ -541,7 +540,7 @@ def load_t2i_adapter(t2i_data):
         cin = t2i_data['body.0.in_conv.weight'].shape[1]
         model_ad = t2i_adapter.Adapter_light(cin=cin, channels=[320, 640, 1280, 1280], nums_rb=4)
     elif 'conv_in.weight' in keys:
-        model_ad = _extracted_from_load_t2i_adapter_18(t2i_data, keys)
+        model_ad = _create_t2i_adapter_from_data(t2i_data, keys)
     else:
         return None
 
@@ -555,8 +554,7 @@ def load_t2i_adapter(t2i_data):
     return T2IAdapter(model_ad, model_ad.input_channels)
 
 
-# TODO Rename this here and in `load_t2i_adapter`
-def _extracted_from_load_t2i_adapter_18(t2i_data, keys):
+def _create_t2i_adapter_from_data(t2i_data, keys):
     cin = t2i_data['conv_in.weight'].shape[1]
     channel = t2i_data['conv_in.weight'].shape[0]
     ksize = t2i_data['body.0.block2.weight'].shape[2]

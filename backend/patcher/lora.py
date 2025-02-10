@@ -5,6 +5,7 @@ import packages_3rdparty.comfyui_lora_collection.lora as lora_utils_comfyui
 
 from backend import memory_management, utils
 from backend import operations
+from backend.superperm_hooks import apply_superperm_to_tensor
 
 # Priority order for LoRA collections
 lora_collection_priority = [lora_utils_webui, lora_utils_comfyui]

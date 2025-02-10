@@ -69,6 +69,12 @@ class StableDiffusion(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_first_stage(self, x):
+        # Handle RGBA by taking only RGB channels
+        if x.shape[1] == 4:
+            x = x[:, :3, :, :]
+        elif x.shape[1] != 3:
+            raise ValueError(f"Unexpected channel dimension. Expected 3 or 4 channels, got shape {x.shape}")
+            
         sample = self.forge_objects.vae.encode(x.movedim(1, -1) * 0.5 + 0.5)
         sample = self.forge_objects.vae.first_stage_model.process_in(sample)
         return sample.to(x)
