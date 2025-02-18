@@ -247,9 +247,9 @@ class AbstractDiffusion:
     def init_noise_inverse(self, steps: int, retouch: float, get_cache_callback, set_cache_callback, renoise_strength: float, renoise_kernel: int):
         self.noise_inverse_enabled = True
         self.noise_inverse_steps = steps
-        self.noise_inverse_retouch = float(retouch)
-        self.noise_inverse_renoise_strength = float(renoise_strength)
-        self.noise_inverse_renoise_kernel = int(renoise_kernel)
+        self.noise_inverse_retouch = retouch
+        self.noise_inverse_renoise_strength = renoise_strength
+        self.noise_inverse_renoise_kernel = renoise_kernel
         self.noise_inverse_set_cache = set_cache_callback
         self.noise_inverse_get_cache = get_cache_callback
 
@@ -274,14 +274,14 @@ class AbstractDiffusion:
     @controlnet
     def prepare_controlnet_tensors(self, refresh: bool = False, tensor=None):
         ''' Crop the control tensor into tiles and cache them '''
-        if not refresh:
-            if self.control_tensor_batch is not None or self.control_params is not None: return
+        if not refresh and (self.control_tensor_batch is not None or self.control_params is not None):
+            return
         tensors = [tensor]
         self.org_control_tensor_batch = tensors
         self.control_tensor_batch = []
-        for i in range(len(tensors)):
+        for item in tensors:
             control_tile_list = []
-            control_tensor = tensors[i]
+            control_tensor = item
             for bboxes in self.batched_bboxes:
                 single_batch_tensors = []
                 for bbox in bboxes:
@@ -345,7 +345,7 @@ class AbstractDiffusion:
                     val[param_id].extend([[None] for _ in range(len(self.batched_bboxes))])
 
             # Below is taken from ldm_patched.modules.controlnet.py, but we need to additionally tile the cnets.
-            # if statement: eager eval. first time when cond_hint is None. 
+            # if statement: eager eval. first time when cond_hint is None.
             if self.refresh or control.cond_hint is None or not isinstance(self.control_params[tuple_key][param_id][batch_id], Tensor):
                 dtype = getattr(control, 'manual_cast_dtype', None)
                 if dtype is None: dtype = getattr(getattr(control, 'control_model', None), 'dtype', None)
@@ -359,15 +359,27 @@ class AbstractDiffusion:
                     if control.sub_idxs is not None and control.cond_hint_original.shape[0] >= control.full_latent_length:
                         control.cond_hint = adaptive_resize(control.cond_hint_original[control.sub_idxs], PW, PH, 'nearest-exact', "center").to(dtype=dtype, device=control.device)
                     else:
-                        if (PH, PW) == (control.cond_hint_original.shape[-2], control.cond_hint_original.shape[-1]):
-                            control.cond_hint = control.cond_hint_original.clone().to(dtype=dtype, device=control.device)
-                        else:
-                            control.cond_hint = adaptive_resize(control.cond_hint_original, PW, PH, 'nearest-exact', "center").to(dtype=dtype, device=control.device)
+                        control.cond_hint = (
+                            control.cond_hint_original.clone().to(
+                                dtype=dtype, device=control.device
+                            )
+                            if (PH, PW)
+                            == (
+                                control.cond_hint_original.shape[-2],
+                                control.cond_hint_original.shape[-1],
+                            )
+                            else adaptive_resize(
+                                control.cond_hint_original,
+                                PW,
+                                PH,
+                                'nearest-exact',
+                                "center",
+                            ).to(dtype=dtype, device=control.device)
+                        )
+                elif (PH, PW) == (control.cond_hint_original.shape[-2], control.cond_hint_original.shape[-1]):
+                    control.cond_hint = control.cond_hint_original.clone().to(dtype=dtype, device=control.device)
                 else:
-                    if (PH, PW) == (control.cond_hint_original.shape[-2], control.cond_hint_original.shape[-1]):
-                        control.cond_hint = control.cond_hint_original.clone().to(dtype=dtype, device=control.device)
-                    else:
-                        control.cond_hint = adaptive_resize(control.cond_hint_original, PW, PH, 'nearest-exact', 'center').to(dtype=dtype, device=control.device)
+                    control.cond_hint = adaptive_resize(control.cond_hint_original, PW, PH, 'nearest-exact', 'center').to(dtype=dtype, device=control.device)
 
                 # Broadcast then tile
                 #
@@ -395,7 +407,9 @@ def gaussian_weights(tile_w: int, tile_h: int) -> Tensor:
     This generates gaussian weights to smooth the noise of each tile.
     This is critical for this method to work.
     '''
-    f = lambda x, midpoint, var=0.01: exp(-(x - midpoint) * (x - midpoint) / (tile_w * tile_w) / (2 * var)) / sqrt(2 * pi * var)
+    f = lambda x, midpoint, var=0.01: exp(
+        -(x - midpoint) * (x - midpoint) / tile_w**2 / (2 * var)
+    ) / sqrt(2 * pi * var)
     x_probs = [f(x, (tile_w - 1) / 2) for x in range(tile_w)]  # -1 because index goes from 0 to latent_width - 1
     y_probs = [f(y, tile_h / 2) for y in range(tile_h)]
 
@@ -442,14 +456,13 @@ class MultiDiffusion(AbstractDiffusion):
                 c_tile['c_crossattn'] = cond_tile
                 if 'time_context' in c_in:
                     c_tile['time_context'] = self.repeat_tensor(c_in['time_context'], n_rep)
-                for key in c_tile:
+                for key, icond in c_tile.items():
                     if key in ['y', 'c_concat']:
-                        icond = c_tile[key]
-                        if icond.shape[2:] == (self.h, self.w):
-                            c_tile[key] = torch.cat([icond[bbox.slicer] for bbox in bboxes])
-                        else:
-                            c_tile[key] = self.repeat_tensor(icond, n_rep)
-
+                        c_tile[key] = (
+                            torch.cat([icond[bbox.slicer] for bbox in bboxes])
+                            if icond.shape[2:] == (self.h, self.w)
+                            else self.repeat_tensor(icond, n_rep)
+                        )
                 # controlnet tiling
                 # self.switch_controlnet_tensors(batch_id, N, len(bboxes))
                 if 'control' in c_in:
@@ -465,13 +478,12 @@ class MultiDiffusion(AbstractDiffusion):
                     self.x_buffer[bbox.slicer] += x_tile_out[i * N:(i + 1) * N, :, :, :]
                 del x_tile_out, x_tile, ts_tile, c_tile
 
-                # update progress bar
-                # self.update_pbar()
+                        # update progress bar
+                        # self.update_pbar()
 
-        # Averaging background buffer
-        x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
-
-        return x_out
+        return torch.where(
+            self.weights > 1, self.x_buffer / self.weights, self.x_buffer
+        )
 
 
 class MixtureOfDiffusers(AbstractDiffusion):
@@ -553,7 +565,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
                                 icond = c_in[key]  # self.get_icond(c_in)
                                 if icond.shape[2:] == (self.h, self.w):
                                     icond = icond[bbox.slicer]
-                                if icond_map.get(key, None) is None:
+                                if icond_map.get(key) is None:
                                     icond_map[key] = []
                                 icond_map[key].append(icond)
                         # # vcond:
@@ -597,10 +609,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
 
                 # self.update_pbar()
                 # self.pbar.update()
-        # self.pbar.close()
-        x_out = self.x_buffer
-
-        return x_out
+        return self.x_buffer
 
 
 MAX_RESOLUTION = 8192

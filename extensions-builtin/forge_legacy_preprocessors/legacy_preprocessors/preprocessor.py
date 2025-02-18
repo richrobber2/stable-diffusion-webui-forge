@@ -37,10 +37,7 @@ def safer_memory(x):
 
 
 def resize_image_with_pad(input_image, resolution, skip_hwc3=False):
-    if skip_hwc3:
-        img = input_image
-    else:
-        img = HWC3(input_image)
+    img = input_image if skip_hwc3 else HWC3(input_image)
     H_raw, W_raw, _ = img.shape
     k = float(resolution) / float(min(H_raw, W_raw))
     interpolation = cv2.INTER_CUBIC if k > 1 else cv2.INTER_AREA
@@ -158,7 +155,7 @@ model_mediapipe_face = None
 
 
 def mediapipe_face(img, res=512, thr_a: int = 10, thr_b: float = 0.5, **kwargs):
-    max_faces = int(thr_a)
+    max_faces = thr_a
     min_confidence = thr_b
     img, remove_pad = resize_image_with_pad(img, res)
     global model_mediapipe_face
@@ -816,10 +813,11 @@ class InsightFaceModel:
         img, remove_pad = resize_image_with_pad(img, res)
         face_info = self.model.get(img)
         if not face_info:
-            raise Exception(f"Insightface: No face found in image.")
+            raise Exception("Insightface: No face found in image.")
         if len(face_info) > 1:
-            print("Insightface: More than one face is detected in the image. "
-                  f"Only the biggest one will be used.")
+            print(
+                'Insightface: More than one face is detected in the image. Only the biggest one will be used.'
+            )
         # only use the maximum face
         face_info = sorted(face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1]
         if return_keypoints:

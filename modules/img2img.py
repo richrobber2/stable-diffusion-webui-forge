@@ -81,7 +81,7 @@ def process_batch(p, input, output_dir, inpaint_mask_dir, args, to_scale=False, 
                 mask_image_dir = Path(inpaint_mask_dir)
                 masks_found = list(mask_image_dir.glob(f"{image_path.stem}.*"))
 
-                if len(masks_found) == 0:
+                if not masks_found:
                     print(f"Warning: mask is not found for {image_path} in {mask_image_dir}. Skipping it.")
                     continue
 
@@ -111,7 +111,7 @@ def process_batch(p, input, output_dir, inpaint_mask_dir, args, to_scale=False, 
             p.sampler_name = parsed_parameters.get("Sampler", sampler_name)
             p.steps = int(parsed_parameters.get("Steps", steps))
 
-            model_info = get_closet_checkpoint_match(parsed_parameters.get("Model hash", None))
+            model_info = get_closet_checkpoint_match(parsed_parameters.get("Model hash"))
             if model_info is not None:
                 p.override_settings['sd_model_checkpoint'] = model_info.name
             elif sd_model_checkpoint_override:
