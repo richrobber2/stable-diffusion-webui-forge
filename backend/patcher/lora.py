@@ -34,6 +34,8 @@ def load_lora(lora, to_load):
     Load LoRA data using the currently active LoRA collections.
     """
     func = get_function('load_lora')
+    if func is None:
+        raise LoraError("No 'load_lora' function found in LoRA collections.")
     patch_dict, remaining_dict = func(lora, to_load)
     return patch_dict, remaining_dict
 
@@ -85,7 +87,23 @@ def model_lora_keys_unet(model, key_map=None):
 @torch.inference_mode()
 def weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation_dtype):
     """
-    Efficiently apply LoRA decomposition and scaling in inference mode.
+    Performs weight decomposition by modifying the input weight tensor using a differential update (lora_diff).
+    This function updates the weight tensor by:
+    1. Casting the dora_scale value to the device and computation data type of the weight.
+    2. Scaling the lora_diff tensor by the given alpha value and ensuring its data type matches that of the weight.
+    3. Adding the scaled lora_diff to the weight tensor.
+    4. Flattening the weight tensor (excluding the first dimension) and computing its norm.
+    5. Calculating a scale factor by dividing the dora_scale tensor by the computed weight norm, then applying this factor to the weight.
+    6. Optionally scaling the weight tensor further by the specified strength if it is not 1.0.
+    Parameters:
+        dora_scale (Tensor): Scaling factor tensor, which is first cast to match the weight's device and computation_dtype.
+        weight (Tensor): The primary weight tensor to be updated.
+        lora_diff (Tensor): The differential tensor representing the weight update, scaled by alpha.
+        alpha (float): The multiplier applied to lora_diff before updating the weight.
+        strength (float): Additional multiplier applied to the final weight tensor (if not equal to 1.0).
+        computation_dtype (torch.dtype): The data type used for intermediate computations.
+    Returns:
+        Tensor: The updated weight tensor after applying the differential update, normalization, and optional strength scaling.
     """
     dora_scale = memory_management.cast_to_device(dora_scale, weight.device, computation_dtype)
 
@@ -107,29 +125,53 @@ def weight_decompose(dora_scale, weight, lora_diff, alpha, strength, computation
     return weight
 
 
-def _helper_apply_diff_patch(weight, w1, strength):
-    """Apply a 'diff' type patch to a weight. Always returns a new tensor."""
+def _apply_weight_diff_patch(weight: torch.Tensor, w1: torch.Tensor, strength: float) -> torch.Tensor:
+    """
+    Applies a differential patch to the given weight tensor using the provided difference tensor.
+    Parameters:
+        weight (torch.Tensor): The original weight tensor to which the patch will be applied.
+        w1 (torch.Tensor): The tensor containing the weight differences to apply.
+        strength (float): A scaling factor for the difference. If set to 0.0, the function returns
+                          a clone of the original weight without any modification.
+    Returns:
+        torch.Tensor: A new tensor with the weighted differences applied. If the shapes of
+                      weight and w1 match, the function directly adds the scaled difference;
+                      otherwise, it delegates to _apply_diff_patch_strength_adjust to handle
+                      the operation.
+    """
     if strength == 0.0:
         return weight.clone()
-        
+
     if w1.shape == weight.shape:
         result = weight.clone()
         result.add_(strength * w1.to(weight.dtype, copy=False))
     else:
-        new_shape = [max(n, m) for n, m in zip(weight.shape, w1.shape)]
-        result = torch.zeros(new_shape, dtype=weight.dtype, device=weight.device)
-        w1 = w1.to(device=weight.device, dtype=weight.dtype, copy=False)
-        slices = tuple(slice(0, s) for s in w1.shape)
-        result.copy_(weight.expand(new_shape))
-        result[slices].add_(strength * w1)
-    
+        result = _apply_diff_patch_strength_adjust(weight, w1, strength)
     return result
 
 
-def _helper_apply_lora_patch(weight, v, strength, computation_dtype, key):
+
+def _apply_diff_patch_strength_adjust(weight, w1, strength):
     """
-    Helper: Apply a 'lora' type patch efficiently.
+    Adjusts the strength of a differential patch applied to a weight tensor.
+    Args:
+        weight (torch.Tensor): The original weight tensor.
+        w1 (torch.Tensor): The differential patch tensor to be applied.
+        strength (float): The strength factor to scale the differential patch.
+    Returns:
+        torch.Tensor: The resulting tensor after applying the differential patch with the specified strength.
     """
+    new_shape = [max(n, m) for n, m in zip(weight.shape, w1.shape)]
+    result = torch.zeros(new_shape, dtype=weight.dtype, device=weight.device)
+    w1 = w1.to(device=weight.device, dtype=weight.dtype, copy=False)
+    slices = tuple(slice(0, s) for s in w1.shape)
+    result.copy_(weight.expand(new_shape))
+    result[slices].add_(strength * w1)
+
+    return result
+
+
+def _apply_lora_patch_helper(weight: torch.Tensor, v: tuple, strength: float, computation_dtype: torch.dtype, key: str) -> torch.Tensor:
     try:
         mat1 = memory_management.cast_to_device(v[0], weight.device, computation_dtype)
         mat2 = memory_management.cast_to_device(v[1], weight.device, computation_dtype)
@@ -155,7 +197,7 @@ def _helper_apply_lora_patch(weight, v, strength, computation_dtype, key):
     return weight
 
 
-def _apply_single_patch(weight, patch_data, computation_dtype):
+def _apply_patch_with_strength(weight: torch.Tensor, patch_data: tuple, computation_dtype: torch.dtype) -> torch.Tensor:
     """Handle application of a single patch."""
     strength, v, strength_model, offset, function = patch_data
     function = function or (lambda a: a)
@@ -176,9 +218,9 @@ def _apply_single_patch(weight, patch_data, computation_dtype):
 
     try:
         if patch_type == "diff":
-            weight = _helper_apply_diff_patch(weight, v[0], strength)
+            weight = _apply_weight_diff_patch(weight, v[0], strength)
         elif patch_type == "lora":
-            weight = _helper_apply_lora_patch(weight, v, strength, computation_dtype, "lora_patch")
+            weight = _apply_lora_patch_helper(weight, v, strength, computation_dtype, "lora_patch")
             weight = function(weight)
     except Exception as e:
         raise LoraError(f"Failed to apply {patch_type} patch: {str(e)}") from e
@@ -198,7 +240,7 @@ def merge_lora_to_weight(patches, weight, key="online_lora", computation_dtype=t
 
     try:
         for patch in patches:
-            weight = _apply_single_patch(weight, patch, computation_dtype)
+            weight = _apply_patch_with_strength(weight, patch, computation_dtype)
     except Exception as e:
         raise LoraError(f"Failed to merge LoRA patches for key {key}") from e
 

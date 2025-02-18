@@ -32,6 +32,17 @@ def dynamic_slice(
         starts: List[int],
         sizes: List[int],
 ) -> Tensor:
+    """
+    Dynamically slices a tensor based on start indices and sizes.
+
+    Args:
+        x (Tensor): The input tensor.
+        starts (List[int]): A list of start indices for each dimension.
+        sizes (List[int]): A list of sizes for each dimension.
+
+    Returns:
+        Tensor: The sliced tensor.
+    """
     slicing = [slice(start, start + size) for start, size in zip(starts, sizes)]
     return x[slicing]
 
@@ -66,8 +77,22 @@ def _summarize_chunk(
         value: Tensor,
         scale: float,
         upcast_attention: bool,
-        mask,
+        mask: Optional[Tensor] = None,
 ) -> AttnChunk:
+    """
+    Summarizes a chunk of attention weights and values.
+
+    Args:
+        query (Tensor): The query tensor.
+        key_t (Tensor): The transposed key tensor.
+        value (Tensor): The value tensor.
+        scale (float): Scaling factor for attention weights.
+        upcast_attention (bool): Whether to upcast attention to float32.
+        mask (Optional[Tensor]): Optional mask to apply to attention weights.
+
+    Returns:
+        AttnChunk: A named tuple containing the exponentiated values, exponentiated weights sum, and max score.
+    """
     if upcast_attention:
         with torch.autocast(enabled=False, device_type='cuda'):
             query = query.float()
@@ -105,7 +130,7 @@ def _query_chunk_attention(
         value: Tensor,
         summarize_chunk: SummarizeChunk,
         kv_chunk_size: int,
-        mask,
+        mask: Optional[Tensor] = None,
 ) -> Tensor:
     batch_x_heads, k_channels_per_head, k_tokens = key_t.shape
     _, _, v_channels_per_head = value.shape
@@ -149,7 +174,7 @@ def _get_attention_scores_no_kv_chunking(
         value: Tensor,
         scale: float,
         upcast_attention: bool,
-        mask,
+        mask: Optional[Tensor] = None,
 ) -> Tensor:
     if upcast_attention:
         with torch.autocast(enabled=False, device_type='cuda'):
@@ -177,15 +202,19 @@ def _get_attention_scores_no_kv_chunking(
         attn_probs = attn_scores.softmax(dim=-1)
         del attn_scores
     except memory_management.OOM_EXCEPTION:
-        print("ran out of memory while running softmax in  _get_attention_scores_no_kv_chunking, trying slower in place softmax instead")
-        attn_scores -= attn_scores.max(dim=-1, keepdim=True).values
-        torch.exp(attn_scores, out=attn_scores)
-        summed = torch.sum(attn_scores, dim=-1, keepdim=True)
-        attn_scores /= summed
-        attn_probs = attn_scores
+        attn_probs = _apply_in_place_softmax(
+            attn_scores
+        )
+    return torch.bmm(attn_probs.to(value.dtype), value)
 
-    hidden_states_slice = torch.bmm(attn_probs.to(value.dtype), value)
-    return hidden_states_slice
+
+def _apply_in_place_softmax(attn_scores):
+    print("ran out of memory while running softmax in  _get_attention_scores_no_kv_chunking, trying slower in place softmax instead")
+    attn_scores -= attn_scores.max(dim=-1, keepdim=True).values
+    torch.exp(attn_scores, out=attn_scores)
+    summed = torch.sum(attn_scores, dim=-1, keepdim=True)
+    attn_scores /= summed
+    return attn_scores
 
 
 class ScannedChunk(NamedTuple):
@@ -197,12 +226,12 @@ def efficient_dot_product_attention(
         query: Tensor,
         key_t: Tensor,
         value: Tensor,
-        query_chunk_size=1024,
+        query_chunk_size: int = 1024,
         kv_chunk_size: Optional[int] = None,
         kv_chunk_size_min: Optional[int] = None,
-        use_checkpoint=True,
-        upcast_attention=False,
-        mask=None,
+        use_checkpoint: bool = True,
+        upcast_attention: bool = False,
+        mask: Optional[Tensor] = None,
 ):
     """Computes efficient dot-product attention given query, transposed key, and value.
       This is efficient version of attention presented in
@@ -257,6 +286,7 @@ def efficient_dot_product_attention(
             _query_chunk_attention,
             kv_chunk_size=kv_chunk_size,
             summarize_chunk=summarize_chunk,
+            mask=mask,
         )
     )
 

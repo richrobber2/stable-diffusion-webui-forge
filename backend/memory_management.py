@@ -780,15 +780,15 @@ def _handle_low_vram_loading(loaded_model, memory_for_inference, vram_set_state)
 def load_models_gpu(models, memory_required=0, hard_memory_preservation=0):
     """
     Load models to GPU with intelligent memory management.
-    
-    Args:
-        models: List of models to load
-        memory_required: Additional memory needed for operations
-        hard_memory_preservation: Memory to always keep free
     """
     global vram_state
     execution_start_time = time.perf_counter()
     
+    # Pre-clear memory on first load
+    if not hasattr(load_models_gpu, 'first_load_complete'):
+        soft_empty_cache(force=True)
+        load_models_gpu.first_load_complete = True
+
     # Calculate memory requirements
     memory_to_free = max(minimum_inference_memory(), memory_required) + hard_memory_preservation
     memory_for_inference = minimum_inference_memory() + hard_memory_preservation
