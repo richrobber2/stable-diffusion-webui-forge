@@ -19,18 +19,22 @@ class NeverOOMForForge(scripts.Script):
 
     def ui(self, *args, **kwargs):
         with gr.Accordion(open=False, label=self.title()):
-            unet_enabled = gr.Checkbox(label='Enabled for UNet (always maximize offload)', value=False)
-            vae_enabled = gr.Checkbox(label='Enabled for VAE (always tiled)', value=False)
+            unet_enabled = gr.Checkbox(
+                label="Enabled for UNet (always maximize offload)", value=False
+            )
+            vae_enabled = gr.Checkbox(
+                label="Enabled for VAE (always tiled)", value=False
+            )
         return unet_enabled, vae_enabled
 
     def process(self, p, *script_args, **kwargs):
         unet_enabled, vae_enabled = script_args
 
         if unet_enabled:
-            print('NeverOOM Enabled for UNet (always maximize offload)')
+            print("NeverOOM Enabled for UNet (always maximize offload)")
 
         if vae_enabled:
-            print('NeverOOM Enabled for VAE (always tiled)')
+            print("NeverOOM Enabled for VAE (always tiled)")
 
         memory_management.VAE_ALWAYS_TILED = vae_enabled
 
@@ -41,7 +45,5 @@ class NeverOOMForForge(scripts.Script):
                 memory_management.vram_state = memory_management.VRAMState.NO_VRAM
             else:
                 memory_management.vram_state = self.original_vram_state
-            print(f'VARM State Changed To {memory_management.vram_state.name}')
+            print(f"VRAM State Changed To {memory_management.vram_state.name}")
             self.previous_unet_enabled = unet_enabled
-
-        return
