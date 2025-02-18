@@ -273,7 +273,7 @@ class Hypernetwork:
             self.dropout_structure = parse_dropout_structure(self.layer_structure, self.use_dropout, self.last_layer_dropout)
 
         if shared.opts.print_hypernet_extra:
-            self._extracted_from_load_22()
+            self._log_layer_info()
         optimizer_saved_dict = (
             torch.load(f'{self.filename}.optim', map_location='cpu')
             if os.path.exists(f'{self.filename}.optim')
@@ -309,8 +309,7 @@ class Hypernetwork:
         self.sd_checkpoint_name = state_dict.get('sd_checkpoint_name', None)
         self.eval()
 
-    # TODO Rename this here and in `load`
-    def _extracted_from_load_22(self):
+    def _log_layer_info(self):
         if self.optional_info is not None:
             print(f"  INFO:\n {self.optional_info}\n")
 
