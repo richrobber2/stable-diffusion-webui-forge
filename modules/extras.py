@@ -55,7 +55,7 @@ def create_config(ckpt_result, config_source, a, b, c):
         return
 
     filename, _ = os.path.splitext(ckpt_result)
-    checkpoint_filename = filename + ".yaml"
+    checkpoint_filename = f"{filename}.yaml"
 
     print("Copying config:")
     print("   from:", cfg)
@@ -67,10 +67,7 @@ checkpoint_dict_skip_on_merge = ["cond_stage_model.transformer.text_model.embedd
 
 
 def to_half(tensor, enable):
-    if enable and tensor.dtype == torch.float:
-        return tensor.half()
-
-    return tensor
+    return tensor.half() if enable and tensor.dtype == torch.float else tensor
 
 
 def read_metadata(primary_model_name, secondary_model_name, tertiary_model_name):
@@ -81,7 +78,7 @@ def read_metadata(primary_model_name, secondary_model_name, tertiary_model_name)
         if checkpoint_info is None:
             continue
 
-        metadata.update(checkpoint_info.metadata)
+        metadata |= checkpoint_info.metadata
 
     return json.dumps(metadata, indent=4, ensure_ascii=False)
 
@@ -263,7 +260,7 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
         vae_dict = sd_vae.load_torch_file(bake_in_vae_filename)
 
         for key in vae_dict.keys():
-            theta_0_key = 'first_stage_model.' + key
+            theta_0_key = f'first_stage_model.{key}'
             if theta_0_key in theta_0:
                 theta_0[theta_0_key] = to_half(vae_dict[key], save_as_half)
 
@@ -289,7 +286,7 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
     filename = filename_generator() if custom_name == '' else custom_name
     filename += ".inpainting" if result_is_inpainting_model else ""
     filename += ".instruct-pix2pix" if result_is_instruct_pix2pix_model else ""
-    filename += "." + checkpoint_format
+    filename += f".{checkpoint_format}"
 
     output_modelname = os.path.join(ckpt_dir, filename)
 
@@ -355,7 +352,9 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
 
     _, extension = os.path.splitext(output_modelname)
     if extension.lower() == ".safetensors":
-        safetensors.torch.save_file(theta_0, output_modelname, metadata=metadata if len(metadata)>0 else None)
+        safetensors.torch.save_file(
+            theta_0, output_modelname, metadata=metadata or None
+        )
     else:
         torch.save(theta_0, output_modelname)
 
@@ -371,4 +370,10 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
     shared.state.textinfo = "Checkpoint saved"
     shared.state.end()
 
-    return [*[gr.Dropdown.update(choices=sd_models.checkpoint_tiles()) for _ in range(4)], "Checkpoint saved to " + output_modelname]
+    return [
+        *[
+            gr.Dropdown.update(choices=sd_models.checkpoint_tiles())
+            for _ in range(4)
+        ],
+        f"Checkpoint saved to {output_modelname}",
+    ]
