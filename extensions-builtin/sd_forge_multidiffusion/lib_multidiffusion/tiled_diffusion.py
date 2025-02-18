@@ -626,8 +626,10 @@ class TiledDiffusion():
     def apply(self, model: ModelPatcher, method, tile_width, tile_height, tile_overlap, tile_batch_size):
         if method == "Mixture of Diffusers":
             implement = MixtureOfDiffusers()
-        else:
+        elif method == "MultiDiffusion":
             implement = MultiDiffusion()
+        else:
+            raise ValueError(f"Invalid method: {method}")
 
         # if noise_inversion:
         #     get_cache_callback = self.noise_inverse_get_cache
