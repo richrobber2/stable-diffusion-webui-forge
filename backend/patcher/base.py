@@ -74,6 +74,13 @@ class ModelPatcher:
         return self.size
 
     def clone(self):
+        """
+        Creates a deep copy of the current ModelPatcher instance, including its model options,
+        lora patches, and object patches.
+
+        Returns:
+            ModelPatcher: A new instance of ModelPatcher with the same attributes as the original.
+        """
         n = ModelPatcher(
             self.model,
             self.load_device,
