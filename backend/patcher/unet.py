@@ -48,7 +48,10 @@ class UnetPatcher(ModelPatcher):
         # If GPU VRAM is 8 GB, and memory_in_bytes is 2GB, i.e., memory_in_bytes = 2 * 1024 * 1024 * 1024
         # Then the sampling will always use less than 6GB memory by dynamically offload modules to CPU RAM.
         # You can estimate this using memory_management.module_size(any_pytorch_model) to get size of any pytorch models.
-        self.extra_preserved_memory_during_sampling += memory_in_bytes
+        if isinstance(memory_in_bytes, int) and memory_in_bytes > 0:
+            self.extra_preserved_memory_during_sampling += memory_in_bytes
+        else:
+            raise ValueError("memory_in_bytes must be a positive integer")
         return
 
     def add_extra_model_patcher_during_sampling(self, model_patcher: ModelPatcher):
@@ -187,7 +190,17 @@ class UnetPatcher(ModelPatcher):
             for model_key, patch_data in patch_dict.items()
         }
 
-        config = PatchConfig(filename=filename, patches=patches, 
-                           strength_patch=float(strength), strength_model=1.0)
-        self.add_patches(**vars(config))
+        config = PatchConfig(
+            filename=filename,
+            patches=patches,
+            strength_patch=strength,
+            strength_model=1.0,
+        )
+        
+        self.add_patches(
+            filename=config.filename,
+            patches=config.patches,
+            strength_patch=config.strength_patch,
+            strength_model=config.strength_model
+        )
         return
