@@ -270,8 +270,8 @@ onUiLoaded(function() {
     showRestoreProgressButton('img2img', localGet("img2img_task_id"));
     setupResolutionPasting('txt2img');
     setupResolutionPasting('img2img');
+    setupLivePreview();
 });
-
 
 function modelmerger() {
     var id = randomId();
@@ -440,3 +440,40 @@ function onEdit(editId, elem, afterMs, func) {
 
     return edited;
 }
+
+let livePreviewActive = false;
+
+function toggleLivePreview(event) {
+    livePreviewActive = !livePreviewActive;
+    event.target.classList.toggle('active');
+    localStorage.setItem('livePreviewEnabled', livePreviewActive);
+}
+
+function updateLivePreview(img) {
+    if (!livePreviewActive) return;
+    const now = Date.now();
+    if (now - lastPreviewTime < PREVIEW_THROTTLE_MS) return;
+    lastPreviewTime = now;
+    
+    const preview = gradioApp().querySelector('.live-preview-image');
+    if (preview) {
+        // Use createImageBitmap for better performance
+        createImageBitmap(img).then(bitmap => {
+            const ctx = preview.getContext('2d');
+            ctx.drawImage(bitmap, 0, 0, preview.width, preview.height);
+            bitmap.close();
+        });
+    }
+}
+
+function setupLivePreview() {
+    // Restore live preview state
+    livePreviewActive = localStorage.getItem('livePreviewEnabled') === 'true';
+    const toggleButton = gradioApp().querySelector('#live-preview-toggle');
+    if (toggleButton) {
+        toggleButton.classList.toggle('active', livePreviewActive);
+        toggleButton.addEventListener('click', toggleLivePreview);
+    }
+}
+
+onUiLoaded(setupLivePreview);
