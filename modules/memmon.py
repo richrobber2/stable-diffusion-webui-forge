@@ -37,23 +37,21 @@ class MemUsageMonitor(threading.Thread):
         if self.disabled:
             return
 
-        while True:
-            self.run_flag.wait()
+        # Start monitoring immediately.
+        self.run_flag.set()
+        torch.cuda.reset_peak_memory_stats()
+        self.data.clear()
 
-            torch.cuda.reset_peak_memory_stats()
-            self.data.clear()
+        if self.opts.memmon_poll_rate <= 0:
+            self.run_flag.clear()
+            return
 
-            if self.opts.memmon_poll_rate <= 0:
-                self.run_flag.clear()
-                continue
+        self.data["min_free"] = self.cuda_mem_get_info()[0]
 
-            self.data["min_free"] = self.cuda_mem_get_info()[0]
-
-            while self.run_flag.is_set():
-                free, total = self.cuda_mem_get_info()
-                self.data["min_free"] = min(self.data["min_free"], free)
-
-                time.sleep(1 / self.opts.memmon_poll_rate)
+        while self.run_flag.is_set():
+            free, total = self.cuda_mem_get_info()
+            self.data["min_free"] = min(self.data["min_free"], free)
+            time.sleep(1 / self.opts.memmon_poll_rate)
 
     def dump_debug(self):
         print(self, 'recorded data:')

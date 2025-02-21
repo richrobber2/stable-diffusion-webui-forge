@@ -1237,6 +1237,24 @@ def soft_empty_cache(force=False):
     return
 
 
-def unload_all_models():
-    free_memory(1e30, get_torch_device(), free_all=True)
+def unload_all_models(force=False, memory_required=None):
+    """Optimized model unloading with memory tracking and caching.
+    
+    Args:
+        force (bool): Force unload all models regardless of memory state
+        memory_required (int, optional): Minimum memory to free in bytes
+    """
+    # Quick check if unloading is really needed
+    if not force and not current_loaded_models:
+        return
+
+    device = get_torch_device()
+    available_mem = get_free_memory(device)
+
+    # If memory requirement specified, only unload what's needed
+    if not force and memory_required and available_mem >= memory_required:
+        return
+        
+    free_memory(1e30, device, free_all=True)
     current_loaded_models.clear()
+    soft_empty_cache()

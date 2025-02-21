@@ -1,24 +1,20 @@
-# Reorder helper functions for model weights
-
-def generate_superpermutation(n):
-    """
-    Generates a superpermutation order for n elements.
-    Placeholder implementation; replace with an optimized algorithm.
-    """
-    return list(range(n))
+import torch
 
 def apply_superpermutation_reordering(tensor):
     """
-    Reorders tensor elements based on an optimized superpermutation sequence.
+    Applies a simplified reordering optimization to the tensor.
+    For now just ensures tensors are in contiguous memory layout.
     """
-    n = tensor.shape[0]  # Assuming reordering along first dimension
-    perm_order = generate_superpermutation(n)
-    return tensor[perm_order]
+    if not tensor.is_contiguous():
+        return tensor.contiguous()
+    return tensor
 
 def apply_superperm_to_tensor(tensor):
     """
-    Applies superpermutation reordering to a tensor.
+    Optimized version that only operates on qualifying tensors.
     """
+    if tensor.ndim < 2 or tensor.shape[0] < 64:  # Skip small tensors
+        return tensor
     try:
         return apply_superpermutation_reordering(tensor)
     except Exception:
@@ -26,9 +22,10 @@ def apply_superperm_to_tensor(tensor):
 
 def apply_superperm_to_model(model):
     """
-    Iterates over model parameters and applies superpermutation reordering.
+    Selectively applies optimization only to significant model parameters.
     """
+    # Only process large parameter tensors where optimization matters
     for name, param in model.named_parameters():
-        if hasattr(param, "ndim") and param.ndim > 0:
+        if param.ndim >= 2 and param.shape[0] >= 64:
             param.data = apply_superperm_to_tensor(param.data)
     return model

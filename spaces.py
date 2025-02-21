@@ -162,7 +162,7 @@ def GPU(gpu_objects=None, manual_load=False, **kwargs):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             print("Entering Forge Space GPU ...")
-            memory_management.unload_all_models()
+            memory_management.unload_all_models(force=False)
             if not manual_load:
                 for o in gpu_objects:
                     o.gpu()

@@ -14,6 +14,11 @@ waiting_list = []
 finished_list = []
 last_exception = None
 
+_task_condition = threading.Condition(lock)
+_min_sleep = 0.001  # Minimum sleep time 1ms
+_max_sleep = 0.05   # Maximum sleep time 50ms
+_current_sleep = _min_sleep
+
 
 class Task:
     def __init__(self, task_id, func, args, kwargs):
@@ -23,6 +28,7 @@ class Task:
         self.kwargs = kwargs
         self.result = None
         self.exception = None
+        self.event = threading.Event()  # new event to signal completion
 
     def work(self):
         global last_exception
@@ -38,16 +44,25 @@ class Task:
         finally:
             with lock:
                 finished_list.append(self)
+            self.event.set()  # signal that the task is finished
 
 
 def loop():
-    global lock, last_id, waiting_list, finished_list
+    global lock, last_id, waiting_list, finished_list, _current_sleep
     while True:
-        time.sleep(0.01)
-        if len(waiting_list) > 0:
-            with lock:
+        task = None
+        with _task_condition:
+            if len(waiting_list) > 0:
                 task = waiting_list.pop(0)
+                _current_sleep = _min_sleep  # Reset sleep time when work found
+            else:
+                # Wait with timeout, allows for new tasks to wake us
+                _task_condition.wait(timeout=_current_sleep)
+                # Exponential backoff up to max sleep time
+                _current_sleep = min(_max_sleep, _current_sleep * 1.5)
+                continue
 
+        if task is not None:
             task.work()
 
 
@@ -57,22 +72,23 @@ def async_run(func, *args, **kwargs):
         last_id += 1
         new_task = Task(task_id=last_id, func=func, args=args, kwargs=kwargs)
         waiting_list.append(new_task)
+        _task_condition.notify()  # Wake up worker thread
     return new_task.task_id
 
 
 def run_and_wait_result(func, *args, **kwargs):
-    global lock, last_id, waiting_list, finished_list
-    current_id = async_run(func, *args, **kwargs)
-    while True:
-        time.sleep(0.01)
-        finished_task = None
-        with lock:
-            for t in finished_list:
-                if t.task_id == current_id:
-                    finished_task = t
-                    break
-        if finished_task is not None:
-            with lock:
-                finished_list.remove(finished_task)
-            return finished_task.result
+    # Use synchronous creation and wait for task completion
+    with lock:
+        global last_id
+        last_id += 1
+        new_task = Task(task_id=last_id, func=func, args=args, kwargs=kwargs)
+        waiting_list.append(new_task)
+        _task_condition.notify()  # Wake up worker thread
+    new_task.event.wait()  # wait until task.work() signals completion
+
+    # new check: if task failed, raise its exception
+    if new_task.exception is not None:
+        raise new_task.exception
+
+    return new_task.result
 

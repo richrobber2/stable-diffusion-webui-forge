@@ -648,7 +648,7 @@ def program_version():
     import launch
 
     res = launch.git_tag()
-    if res == "<none>":
+    if (res == "<none>"):
         res = None
 
     return res
@@ -793,7 +793,9 @@ def manage_model_and_prompt_cache(p: StableDiffusionProcessing):
     p.sd_model, just_reloaded = forge_model_reload()
 
     if need_global_unload and not just_reloaded:
-        memory_management.unload_all_models()
+        # Calculate required memory for the current processing
+        required_mem = p.width * p.height * 4 * 4  # Rough estimate
+        memory_management.unload_all_models(force=False, memory_required=required_mem)
 
     if need_global_unload:
         p.clear_prompt_cache()
@@ -1588,32 +1590,60 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
 
         self.hr_c = self.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, hr_prompts, self.firstpass_steps, [self.cached_hr_c, self.cached_c], self.hr_extra_network_data, total_steps)
 
-    def setup_conds(self):
-        if self.is_hr_pass:
-            # if we are in hr pass right now, the call is being made from the refiner, and we don't need to setup firstpass cons or switch model
-            self.hr_c = None
-            self.calculate_hr_conds()
+    def close(self):
+        super().close()
+        self.hr_c = None
+        self.hr_uc = None
+        if not opts.persistent_cond_cache:
+            StableDiffusionProcessingTxt2Img.cached_hr_uc = [None, None]
+            StableDiffusionProcessingTxt2Img.cached_hr_c = [None, None]
+
+    def setup_prompts(self):
+        super().setup_prompts()
+
+        if not self.enable_hr:
             return
 
-        super().setup_conds()
+        if self.hr_prompt == '':
+            self.hr_prompt = self.prompt
 
-        self.hr_uc = None
-        self.hr_c = None
+        if self.hr_negative_prompt == '':
+            self.hr_negative_prompt = self.negative_prompt
 
-        if self.enable_hr and self.hr_checkpoint_info is None:
-            if shared.opts.hires_fix_use_firstpass_conds:
-                self.calculate_hr_conds()
-            else:
-                with devices.autocast():
-                    extra_networks.activate(self, self.hr_extra_network_data)
+        if isinstance(self.hr_prompt, list):
+            self.all_hr_prompts = self.hr_prompt
+        else:
+            self.all_hr_prompts = self.batch_size * self.n_iter * [self.hr_prompt]
 
-                self.calculate_hr_conds()
+        if isinstance(self.hr_negative_prompt, list):
+            self.all_hr_negative_prompts = self.hr_negative_prompt
+        else:
+            self.all_hr_negative_prompts = self.batch_size * self.n_iter * [self.hr_negative_prompt]
 
-                with devices.autocast():
-                    extra_networks.activate(self, self.extra_network_data)
+        self.all_hr_prompts = [shared.prompt_styles.apply_styles_to_prompt(x, self.styles) for x in self.all_hr_prompts]
+        self.all_hr_negative_prompts = [shared.prompt_styles.apply_negative_styles_to_prompt(x, self.styles) for x in self.all_hr_negative_prompts]
+
+    def calculate_hr_conds(self):
+        if self.hr_c is not None:
+            return
+
+        hr_prompts = prompt_parser.SdConditioning(self.hr_prompts, width=self.hr_upscale_to_x, height=self.hr_upscale_to_y, distilled_cfg_scale=self.hr_distilled_cfg)
+        hr_negative_prompts = prompt_parser.SdConditioning(self.hr_negative_prompts, width=self.hr_upscale_to_x, height=self.hr_upscale_to_y, is_negative_prompt=True, distilled_cfg_scale=self.hr_distilled_cfg)
+
+        sampler_config = sd_samplers.find_sampler_config(self.hr_sampler_name or self.sampler_name)
+        steps = self.hr_second_pass_steps or self.steps
+        total_steps = sampler_config.total_steps(steps) if sampler_config else steps
+
+        if self.hr_cfg == 1:
+            self.hr_uc = None
+            print('Skipping unconditional conditioning (HR pass) when CFG = 1. Negative Prompts are ignored.')
+        else:
+            self.hr_uc = self.get_conds_with_caching(prompt_parser.get_learned_conditioning, hr_negative_prompts, self.firstpass_steps, [self.cached_hr_uc, self.cached_uc], self.hr_extra_network_data, total_steps)
+
+        self.hr_c = self.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, hr_prompts, self.firstpass_steps, [self.cached_hr_c, self.cached_c], self.hr_extra_network_data, total_steps)
 
     def get_conds(self):
-        return (self.hr_c, self.hr_uc) if self.is_hr_pass else super().get_conds()
+        return self.hr_c, self.hr_uc
 
     def parse_extra_network_prompts(self):
         res = super().parse_extra_network_prompts()

@@ -146,19 +146,44 @@ current_dtype = None
 current_manual_cast_enabled = False
 current_bnb_dtype = None
 
+# Add cache for weight/bias pairs
+_weight_bias_cache = {}
 
 def _manual_cast_forward(module, x, forward_fn, *args, weight_fn=None, bias_fn=None, 
                          skip_weight_dtype=False, skip_bias_dtype=False, **kwargs):
+    """Optimized forward pass with weight/bias caching"""
+    
     if module.parameters_manual_cast:
-        weight, bias, signal = weights_manual_cast(module, x, skip_weight_dtype=skip_weight_dtype, 
-                                                   skip_bias_dtype=skip_bias_dtype, weight_fn=weight_fn, bias_fn=bias_fn)
-        # Use the superpermutation based streaming context by default
-        with main_stream_worker_superperm(weight, bias, signal):
+        # Create cache key based on module id and input properties
+        cache_key = (id(module), x.device, x.dtype, skip_weight_dtype, skip_bias_dtype)
+        
+        # Try to get cached weights/bias
+        cached = _weight_bias_cache.get(cache_key)
+        if cached is not None:
+            weight, bias = cached
+            # Skip manual casting if cache hit
+            return forward_fn(x, weight, bias, *args, **kwargs)
+            
+        # Cache miss - do manual casting
+        weight, bias, signal = weights_manual_cast(module, x, skip_weight_dtype=skip_weight_dtype,
+                                                 skip_bias_dtype=skip_bias_dtype, 
+                                                 weight_fn=weight_fn, bias_fn=bias_fn)
+                                                 
+        with main_stream_worker(weight, bias, signal):
+            # Cache the results before returning
+            if len(_weight_bias_cache) > 1000:  # Prevent unbounded growth
+                _weight_bias_cache.clear()
+            _weight_bias_cache[cache_key] = (weight, bias)
             return forward_fn(x, weight, bias, *args, **kwargs)
     else:
-        # Use superpermutation ordering by default
-        weight, bias = get_weight_and_bias_superperm(module, weight_fn=weight_fn, bias_fn=bias_fn)
+        # Direct weight/bias fetch for non-manual cast
+        weight, bias = get_weight_and_bias(module, weight_fn=weight_fn, bias_fn=bias_fn)
         return forward_fn(x, weight, bias, *args, **kwargs)
+
+# Add function to clear the cache
+def clear_weight_bias_cache():
+    """Clear the weight/bias cache"""
+    _weight_bias_cache.clear()
 
 def _conv_base_forward(self, x, conv_func):
     return _manual_cast_forward(self, x, lambda inp, w, b: conv_func(inp, w, b))
@@ -466,10 +491,10 @@ def automatic_memory_management():
     module_list = set(module_list)
     for module in module_list:
         module.cpu()
-        # NEW: Apply superpermutation compression to each parameter of the module
+        # Only apply superpermutation to large tensors when needed
         for name, param in module.named_parameters():
-            if param.data.ndim > 0:
-                param.data.copy_(compress_weights_superperm(param.data))
+            if param.data.ndim >= 2 and param.shape[0] >= 64:
+                param.data = apply_superperm_to_tensor(param.data)
     memory_management.soft_empty_cache()
     end = time.perf_counter()
 
