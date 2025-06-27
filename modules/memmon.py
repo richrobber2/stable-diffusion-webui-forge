@@ -105,15 +105,15 @@ class MemUsageMonitor(threading.Thread):
                         free, total = self._get_cuda_memory_info()
                         with self._lock:
                             self._data["min_free"] = min(self._data["min_free"], free)
-                        
-                        time.sleep(poll_interval)
+                        # Use efficient waiting
+                        self._shutdown_event.wait(timeout=poll_interval)
                     except Exception as e:
                         logger.error(f"Error during memory monitoring: {e}")
                         break
                         
             except Exception as e:
                 logger.error(f"Error in memory monitor run loop: {e}")
-                time.sleep(1)  # Prevent tight error loop
+                self._shutdown_event.wait(timeout=1)  # Prevent tight error loop
 
         logger.debug(f"Memory monitor stopped for device {self.device}")
 

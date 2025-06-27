@@ -110,7 +110,28 @@ class UndoManager {
 // ------------------------------------------------------------
 // Main Canvas Class: ForgeCanvas
 // ------------------------------------------------------------
+
+/**
+ * ForgeCanvas - A powerful canvas component for Stable Diffusion WebUI Forge
+ * Provides image loading, drawing tools, and mask editing capabilities
+ */
 class ForgeCanvas {
+    /**
+     * ForgeCanvas constructor
+     * @param {string} uuid - Unique identifier for this canvas instance
+     * @param {boolean} noUpload - Disable file upload functionality
+     * @param {boolean} noScribbles - Disable drawing tools
+     * @param {boolean} mask - Enable mask mode for inpainting
+     * @param {number} initialHeight - Initial canvas height
+     * @param {string} scribbleColor - Default brush color
+     * @param {boolean} scribbleColorFixed - Lock brush color
+     * @param {number} scribbleWidth - Default brush width
+     * @param {boolean} scribbleWidthFixed - Lock brush width
+     * @param {number} scribbleAlpha - Default brush opacity
+     * @param {boolean} scribbleAlphaFixed - Lock brush opacity
+     * @param {number} scribbleSoftness - Default brush softness
+     * @param {boolean} scribbleSoftnessFixed - Lock brush softness
+     */
     constructor(
         uuid,
         noUpload = false,
@@ -126,22 +147,41 @@ class ForgeCanvas {
         scribbleSoftness = 0,
         scribbleSoftnessFixed = false
     ) {
+        // ============================================================
+        // CORE CONFIGURATION
+        // ============================================================
         this.gradioConfig = typeof gradio_config !== 'undefined' ? gradio_config : null;
         this.uuid = uuid;
         this.noUpload = noUpload;
         this.noScribbles = noScribbles;
         this.mask = mask;
         this.initialHeight = initialHeight;
+
+        // ============================================================
+        // IMAGE PROPERTIES
+        // ============================================================
         this.img = null;
         this.imgX = 0;
         this.imgY = 0;
         this.originalWidth = 0;
         this.originalHeight = 0;
         this.imgScale = 1;
+
+        // ============================================================
+        // STATE FLAGS
+        // ============================================================
         this.dragging = false;
         this.draggedJustNow = false;
         this.resizing = false;
         this.drawing = false;
+        this.maximized = false;
+        this.pointerInsideContainer = false;
+        this.toolbarDragging = false;
+        this.eraseChanged = false;
+
+        // ============================================================
+        // SCRIBBLE PROPERTIES
+        // ============================================================
         this.scribbleColor = scribbleColor;
         this.scribbleWidth = scribbleWidth;
         this.scribbleAlpha = scribbleAlpha;
@@ -150,40 +190,47 @@ class ForgeCanvas {
         this.scribbleWidthFixed = scribbleWidthFixed;
         this.scribbleAlphaFixed = scribbleAlphaFixed;
         this.scribbleSoftnessFixed = scribbleSoftnessFixed;
-        this.history = [];
-        this.historyIndex = -1;
-        this.maximized = false;
-        this.originalState = {};
-        this.contrastPattern = null;
-        this.pointerInsideContainer = false;
-        this.tempCanvas = document.createElement('canvas');
-        this.tempDrawPoints = [];
-        this.tempDrawBackground = null;
-        this.backgroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_background');
-        this.foregroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_foreground');
-        this.contrastPatternCanvas = null;
+
+        // ============================================================
+        // TOOL & MODE PROPERTIES
+        // ============================================================
         this.currentMode = 'normal';
         this.currentTool = 'brush';
-        this.eraseChanged = false;
-        this.toolbarDragging = false;
-        this.toolbarOffset = { x: 0, y: 0 };
-        this.undoManager = new UndoManager(20); // Limit to 20 states
-        this.lastMousePos = { x: 0, y: 0 };
 
-        // *** CHANGES ***
-        // For performance: keep track of drawing context
+        // ============================================================
+        // CANVAS & DRAWING CONTEXT
+        // ============================================================
+        this.tempCanvas = document.createElement('canvas');
         this.drawingCtx = null;
+        this.contrastPatternCanvas = null;
+        this.contrastPattern = null;
 
-        // requestAnimationFrame loop controls
+        // ============================================================
+        // ANIMATION LOOP PROPERTIES
+        // ============================================================
         this.isDrawingLoopActive = false;
         this.drawPending = false;
-
-        // We store all brush or eraser commands since last frame
         this.brushStrokes = []; // { x0, y0, x1, y1, type }
 
-        // Debounce for dataURL updates
+        // ============================================================
+        // PERFORMANCE & UTILITY PROPERTIES
+        // ============================================================
         this.uploadDebounceTimer = null;
         this.uploadDebounceDelay = 300; // ms
+        this.tempDrawPoints = [];
+        this.tempDrawBackground = null;
+        this.lastMousePos = { x: 0, y: 0 };
+        this.toolbarOffset = { x: 0, y: 0 };
+        this.originalState = {};
+
+        // ============================================================
+        // HISTORY & BINDINGS
+        // ============================================================
+        this.history = [];
+        this.historyIndex = -1;
+        this.undoManager = new UndoManager(20);
+        this.backgroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_background');
+        this.foregroundGradioBind = new GradioTextAreaBind(this.uuid, 'logical_image_foreground');
 
         this.start(); // Initialize all logic
     }
@@ -218,14 +265,13 @@ class ForgeCanvas {
             this.drawingCanvas.setAttribute('tabindex', '0');
         }
 
-        // *** CHANGES ***
         // Kick off an animation loop for drawing changes
         this.startDrawingLoop();
     }
 
-    // ------------------------------------------------------------
+    // ============================================================
     // 1) DOM CACHING & INITIAL UI SETUP
-    // ------------------------------------------------------------
+    // ============================================================
     cacheDOMElements() {
         const ids = [
             'imageContainer', 'image', 'resizeLine', 'container', 'toolbar', 'uploadButton',
@@ -270,7 +316,6 @@ class ForgeCanvas {
             drawingCanvas.width = this.elems.imageContainer.clientWidth;
             drawingCanvas.height = this.elems.imageContainer.clientHeight;
             this.drawingCanvas = drawingCanvas;
-            // *** CHANGES ***
             // Grab and store a single 2D context
             this.drawingCtx = drawingCanvas.getContext('2d');
         }
@@ -359,9 +404,9 @@ class ForgeCanvas {
         });
     }
 
-    // ------------------------------------------------------------
+    // ============================================================
     // 2) EVENT BINDING
-    // ------------------------------------------------------------
+    // ============================================================
     bindToolbarEvents() {
         const {
             uploadButton, resetButton, centerButton, removeButton,
@@ -491,7 +536,6 @@ class ForgeCanvas {
             });
         }
 
-        // *** CHANGES ***
         // We'll collect pointerdown and pointermove, but actual drawing
         // will happen via requestAnimationFrame in 'startDrawingLoop()'
 
@@ -660,10 +704,13 @@ class ForgeCanvas {
         resizeObserver.observe(this.elems.container);
     }
 
-    // ------------------------------------------------------------
-    // requestAnimationFrame-based drawing loop
-    // ------------------------------------------------------------
-    // *** CHANGES ***
+    // ============================================================
+    // 3) DRAWING OPERATIONS & ANIMATION LOOP
+    // ============================================================
+    
+    /**
+     * Starts the requestAnimationFrame-based drawing loop for performance
+     */
     startDrawingLoop() {
         if (this.isDrawingLoopActive) return;
         this.isDrawingLoopActive = true;
@@ -691,6 +738,10 @@ class ForgeCanvas {
         requestAnimationFrame(drawFrame);
     }
 
+    /**
+     * Handles pointer movement on canvas for drawing operations
+     * @param {PointerEvent} e - The pointer event
+     */
     handlePointerMoveCanvas(e) {
         if (!this.drawing || !this.img || this.noScribbles) return;
         const rect = this.drawingCanvas.getBoundingClientRect();
@@ -710,8 +761,9 @@ class ForgeCanvas {
         this.tempDrawPoints.push([x, y]);
     }
 
-    // Single line approach for brush
-    // *** CHANGES ***
+    /**
+     * Single line approach for brush drawing
+     */
     drawBrushLine(x0, y0, x1, y1) {
         const ctx = this.drawingCtx;
         ctx.save();
@@ -739,10 +791,9 @@ class ForgeCanvas {
         ctx.lineJoin = 'round';
         ctx.lineWidth = (this.scribbleWidth / this.imgScale) * 20;
 
-        // *** CHANGES ***
-        // Use shadowBlur to simulate softness (instead of multi-pass)
+        // Use shadowBlur to simulate softness
         ctx.shadowColor = this.scribbleColor;
-        ctx.shadowBlur = this.scribbleSoftness; // can be tuned
+        ctx.shadowBlur = this.scribbleSoftness;
 
         ctx.beginPath();
         ctx.moveTo(x0, y0);
@@ -752,8 +803,9 @@ class ForgeCanvas {
         ctx.restore();
     }
 
-    // Single line approach for eraser
-    // *** CHANGES ***
+    /**
+     * Single line approach for eraser
+     */
     drawEraserLine(x0, y0, x1, y1) {
         const ctx = this.drawingCtx;
         ctx.save();
@@ -771,9 +823,9 @@ class ForgeCanvas {
         ctx.restore();
     }
 
-    // ------------------------------------------------------------
-    // 3) POINTER & MOUSE EVENT HANDLERS (Image Container)
-    // ------------------------------------------------------------
+    // ============================================================
+    // 4) POINTER & MOUSE EVENT HANDLERS (Image Container)
+    // ============================================================
     onPointerDownImageContainer(e) {
         const { imageContainer, image } = this.elems;
         if (!imageContainer || !this.img) {
@@ -895,9 +947,9 @@ class ForgeCanvas {
         if (this.drawingCanvas) this.drawingCanvas.style.cursor = 'grab';
     }
 
-    // ------------------------------------------------------------
-    // 4) IMAGE / FILE / CLIPBOARD HANDLING
-    // ------------------------------------------------------------
+    // ============================================================
+    // 5) IMAGE / FILE / CLIPBOARD HANDLING
+    // ============================================================
     handleFileUpload(file) {
         if (!file || this.noUpload) return;
 
@@ -989,15 +1041,9 @@ class ForgeCanvas {
         }
     }
 
-    // ------------------------------------------------------------
-    // 5) DRAWING & ERASING (No multi-pass softness)
-    // ------------------------------------------------------------
-
-    // In this version, everything is handled by the single-line approach above.
-
-    // ------------------------------------------------------------
+    // ============================================================
     // 6) CANVAS / IMAGE OPERATIONS & HISTORY
-    // ------------------------------------------------------------
+    // ============================================================
     drawImage() {
         const { image, drawingCanvas } = this.elems;
         if (!image || !drawingCanvas) return;
@@ -1076,17 +1122,6 @@ class ForgeCanvas {
         this.clearHistory();
     }
 
-    isInsideImage(x, y) {
-        const scaledWidth = this.originalWidth * this.imgScale;
-        const scaledHeight = this.originalHeight * this.imgScale;
-        return (
-            x > this.imgX &&
-            x < this.imgX + scaledWidth &&
-            y > this.imgY &&
-            y < this.imgY + scaledHeight
-        );
-    }
-
     saveState() {
         const {drawingCanvas} = this.elems;
         if (!drawingCanvas) return;
@@ -1099,7 +1134,6 @@ class ForgeCanvas {
         this.undoManager.pushState(state);
         this.updateUndoRedoButtons();
 
-        // *** CHANGES ***
         // Debounce dataURL generation
         if (this.uploadDebounceTimer) {
             clearTimeout(this.uploadDebounceTimer);
@@ -1196,9 +1230,9 @@ class ForgeCanvas {
         }
     }
 
-    // ------------------------------------------------------------
+    // ============================================================
     // 7) UI MAXIMIZE / MINIMIZE & TOOL SELECTION
-    // ------------------------------------------------------------
+    // ============================================================
     maximize() {
         if (this.maximized) return;
 
@@ -1248,6 +1282,31 @@ class ForgeCanvas {
         this.maximized = false;
     }
 
+    // ============================================================
+    // 8) UTILITY METHODS
+    // ============================================================
+
+    /**
+     * Checks if the given coordinates are inside the image bounds
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {boolean} True if inside image bounds
+     */
+    isInsideImage(x, y) {
+        const scaledWidth = this.originalWidth * this.imgScale;
+        const scaledHeight = this.originalHeight * this.imgScale;
+        return (
+            x > this.imgX &&
+            x < this.imgX + scaledWidth &&
+            y > this.imgY &&
+            y < this.imgY + scaledHeight
+        );
+    }
+
+    /**
+     * Sets the current drawing tool
+     * @param {string} tool - The tool to set ('brush' or 'eraser')
+     */
     setTool(tool) {
         if (tool === this.currentTool) return;
         this.currentTool = tool;
@@ -1258,6 +1317,10 @@ class ForgeCanvas {
         }
     }
 
+    /**
+     * Adjusts the brush size by the given delta
+     * @param {number} delta - The amount to change the brush size
+     */
     adjustBrushSize(delta) {
         const newWidth = Math.max(1, Math.min(100, this.scribbleWidth + delta));
         this.scribbleWidth = newWidth;

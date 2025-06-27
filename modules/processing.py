@@ -920,6 +920,8 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
         if state.job_count == -1:
             state.job_count = p.n_iter
+            # Only show total progress bar if generating more than one image
+            shared.opts.multiple_tqdm = state.job_count > 1
 
         for n in range(p.n_iter):
             p.iteration = n
