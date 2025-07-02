@@ -54,11 +54,11 @@ def wrap_gradio_call(func, extra_outputs=None, add_stats=False):
         try:
             res = func(*args, **kwargs)
         finally:
+            # Only reset flags that are not already handled by shared.state.end()
             shared.state.skipped = False
             shared.state.interrupted = False
             shared.state.stopping_generation = False
-            shared.state.job_count = 0
-            shared.state.job = ""
+            # job and job_count are reset in shared.state.end(), so do not reset here
         return res
 
     return wrap_gradio_call_no_job(f, extra_outputs, add_stats)

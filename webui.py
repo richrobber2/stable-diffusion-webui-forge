@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+# Import the global Pydantic configuration first
+import pydantic_global_config
+
 import os
 import time
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from modules import timer
 from modules import initialize_util
@@ -27,15 +31,27 @@ initialize.check_versions()
 initialize.initialize()
 
 
+class ErrorResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    error: str = Field(description="Error type name")
+    detail: str | None = Field(default=None, description="Error details")
+    body: str | None = Field(default=None, description="Error body")
+    message: str = Field(description="Error message")
+
+
 def _handle_exception(request: Request, e: Exception):
     error_information = vars(e)
-    content = {
-        "error": type(e).__name__,
-        "detail": error_information.get("detail", ""),
-        "body": error_information.get("body", ""),
-        "message": str(e),
-    }
-    return JSONResponse(status_code=int(error_information.get("status_code", 500)), content=jsonable_encoder(content))
+    content = ErrorResponse(
+        error=type(e).__name__,
+        detail=error_information.get("detail", ""),
+        body=error_information.get("body", ""),
+        message=str(e),
+    )
+    return JSONResponse(
+        status_code=int(error_information.get("status_code", 500)), 
+        content=jsonable_encoder(content.model_dump())
+    )
 
 
 def create_api(app):
@@ -49,8 +65,10 @@ def create_api(app):
 def api_only_worker():
     from fastapi import FastAPI
     from modules.shared_cmd_options import cmd_opts
+    from spaces import SessionMiddleware
 
-    app = FastAPI(exception_handlers={Exception: _handle_exception})
+    app = FastAPI()
+    app.add_middleware(SessionMiddleware)
     initialize_util.setup_middleware(app)
     api = create_api(app)
 
@@ -61,7 +79,7 @@ def api_only_worker():
     print(f"Startup time: {startup_timer.summary()}.")
     api.launch(
         server_name=initialize_util.gradio_server_name(),
-        port=cmd_opts.port if cmd_opts.port else 7861,
+        port=cmd_opts.port or 7861,
         root_path=f"/{cmd_opts.subpath}" if cmd_opts.subpath else ""
     )
 
@@ -88,6 +106,15 @@ def webui_worker():
             shared.demo.queue(64)
 
         gradio_auth_creds = list(initialize_util.get_gradio_auth_creds()) or None
+        # Ensure gradio_auth_creds is a list of (str, str) tuples or None
+        if gradio_auth_creds is not None:
+            gradio_auth_creds = [
+                (str(cred[0]), str(cred[1]))
+                for cred in gradio_auth_creds
+                if isinstance(cred, (tuple, list)) and len(cred) == 2 and all(isinstance(x, str) for x in cred)
+            ]
+            if not gradio_auth_creds:
+                gradio_auth_creds = None
 
         auto_launch_browser = False
         if os.getenv('SD_WEBUI_RESTARTING') != '1':
@@ -98,38 +125,39 @@ def webui_worker():
 
         from modules_forge.forge_canvas.canvas import canvas_js_root_path
 
-        app, local_url, share_url = shared.demo.launch(
-            share=cmd_opts.share,
-            server_name=initialize_util.gradio_server_name(),
-            server_port=cmd_opts.port,
-            ssl_keyfile=cmd_opts.tls_keyfile,
-            ssl_certfile=cmd_opts.tls_certfile,
-            ssl_verify=cmd_opts.disable_tls_verify,
-            debug=cmd_opts.gradio_debug,
-            auth=gradio_auth_creds,
-            inbrowser=auto_launch_browser,
-            prevent_thread_lock=True,
-            allowed_paths=cmd_opts.gradio_allowed_path + [canvas_js_root_path],
-            app_kwargs={
-                "docs_url": "/docs",
-                "redoc_url": "/redoc",
-                "exception_handlers": {Exception: _handle_exception},
-            },
-            root_path=f"/{cmd_opts.subpath}" if cmd_opts.subpath else "",
-        )
+        with startup_timer.subcategory("gradio launch"):
+            app, local_url, share_url = shared.demo.launch(
+                share=cmd_opts.share,
+                server_name=initialize_util.gradio_server_name(),
+                server_port=cmd_opts.port,
+                ssl_keyfile=cmd_opts.tls_keyfile,
+                ssl_certfile=cmd_opts.tls_certfile,
+                ssl_verify=cmd_opts.disable_tls_verify,
+                debug=cmd_opts.gradio_debug,
+                auth=gradio_auth_creds,
+                inbrowser=auto_launch_browser,
+                prevent_thread_lock=True,
+                allowed_paths=cmd_opts.gradio_allowed_path + [canvas_js_root_path],
+                app_kwargs={
+                    "docs_url": "/docs",
+                    "redoc_url": "/redoc",
+                    "exception_handlers": {Exception: _handle_exception},
+                },
+                root_path=f"/{cmd_opts.subpath}" if cmd_opts.subpath else "",
+            )
+            startup_timer.record("demo launch")
 
-        startup_timer.record("gradio launch")
+            # Safely filter out CORS middleware
+            app.user_middleware = [x for x in app.user_middleware if not (getattr(x, 'cls', None) and getattr(x.cls, '__name__', '') == 'CORSMiddleware')]
+            startup_timer.record("configure CORS middleware")
 
-        # gradio uses a very open CORS policy via app.user_middleware, which makes it possible for
-        # an attacker to trick the user into opening a malicious HTML page, which makes a request to the
-        # running web ui and do whatever the attacker wants, including installing an extension and
-        # running its code. We disable this here. Suggested by RyotaK.
-        app.user_middleware = [x for x in app.user_middleware if x.cls.__name__ != 'CORSMiddleware']
+            initialize_util.setup_middleware(app)
+            startup_timer.record("setup middleware")
 
-        initialize_util.setup_middleware(app)
-
-        progress.setup_progress_api(app)
-        ui.setup_ui_api(app)
+            progress.setup_progress_api(app)
+            startup_timer.record("setup progress API")
+            ui.setup_ui_api(app)
+            startup_timer.record("setup UI API")
 
         if launch_api:
             create_api(app)
