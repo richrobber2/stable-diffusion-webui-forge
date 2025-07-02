@@ -71,6 +71,8 @@ def run_and_wait_result(func, *args, **kwargs):
         waiting_list.append(new_task)
         condition.notify()
     new_task.done_event.wait()
+    if new_task.exception is not None:
+        raise new_task.exception
     with lock:
         if new_task in finished_list:
             finished_list.remove(new_task)
