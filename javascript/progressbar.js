@@ -120,96 +120,63 @@ function requestProgress(id_task, progressbarContainer, gallery, atEnd, onProgre
         divProgress = null;
     };
 
-    var funProgress = function(id_task) {
+    // --- WebSocket-based progress and live preview updates ---
+    var wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = wsProtocol + '//' + location.host + '/ws/progress/' + encodeURIComponent(id_task);
+    var ws = new WebSocket(wsUrl);
+    var progressTimeout = null;
+
+    ws.onopen = function() {
         requestWakeLock();
-        request("./internal/progress", {id_task: id_task, live_preview: false}, function(res) {
-            if (res.completed) {
-                removeProgressBar();
-                return;
-            }
-
-            let progressText = "";
-
-            divInner.style.width = ((res.progress || 0) * 100.0) + '%';
-            divInner.style.background = res.progress ? "" : "transparent";
-
-            if (res.progress > 0) {
-                progressText = ((res.progress || 0) * 100.0).toFixed(0) + '%';
-            }
-
-            if (res.eta) {
-                progressText += " ETA: " + formatTime(res.eta);
-            }
-
-            setTitle(progressText);
-
-            if (res.textinfo && res.textinfo.indexOf("\n") == -1) {
-                progressText = res.textinfo + " " + progressText;
-            }
-
-            divInner.textContent = progressText;
-
-            var elapsedFromStart = (new Date() - dateStart) / 1000;
-
-            if (res.active) wasEverActive = true;
-
-            if (!res.active && wasEverActive) {
-                removeProgressBar();
-                return;
-            }
-
-            if (elapsedFromStart > inactivityTimeout && !res.queued && !res.active) {
-                removeProgressBar();
-                return;
-            }
-
-            if (onProgress) {
-                onProgress(res);
-            }
-
-            setTimeout(() => {
-                funProgress(id_task, res.id_live_preview);
-            }, opts.live_preview_refresh_period || 500);
-        }, function() {
-            removeProgressBar();
-        });
     };
-
-    var funLivePreview = function(id_task, id_live_preview) {
-        request("./internal/progress", {id_task: id_task, id_live_preview: id_live_preview}, function(res) {
-            if (!divProgress) {
-                return;
-            }
-
-            if (res.live_preview && gallery) {
-                var img = new Image();
-                img.onload = function() {
-                    if (!livePreview) {
-                        livePreview = document.createElement('div');
-                        livePreview.className = 'livePreview';
-                        gallery.insertBefore(livePreview, gallery.firstElementChild);
-                    }
-
-                    livePreview.appendChild(img);
-                    if (livePreview.childElementCount > 2) {
-                        livePreview.removeChild(livePreview.firstElementChild);
-                    }
-                };
-                img.src = res.live_preview;
-            }
-
-            setTimeout(() => {
-                funLivePreview(id_task, res.id_live_preview);
-            }, opts.live_preview_refresh_period || 500);
-        }, function() {
+    ws.onmessage = function(event) {
+        var res = JSON.parse(event.data);
+        let progressText = "";
+        divInner.style.width = ((res.progress || 0) * 100.0) + '%';
+        divInner.style.background = res.progress ? "" : "transparent";
+        if (res.progress > 0) {
+            progressText = ((res.progress || 0) * 100.0).toFixed(0) + '%';
+        }
+        setTitle(progressText);
+        divInner.textContent = progressText;
+        var elapsedFromStart = (new Date() - dateStart) / 1000;
+        if (res.active) wasEverActive = true;
+        if (!res.active && wasEverActive) {
+            ws.close();
             removeProgressBar();
-        });
+            return;
+        }
+        if (elapsedFromStart > inactivityTimeout && !res.queued && !res.active) {
+            ws.close();
+            removeProgressBar();
+            return;
+        }
+        if (onProgress) {
+            onProgress(res);
+        }
+        // --- Live preview update ---
+        if (res.live_preview && gallery) {
+            var img = new Image();
+            img.onload = function() {
+                if (!livePreview) {
+                    livePreview = document.createElement('div');
+                    livePreview.className = 'livePreview';
+                    gallery.insertBefore(livePreview, gallery.firstElementChild);
+                }
+                livePreview.appendChild(img);
+                if (livePreview.childElementCount > 2) {
+                    livePreview.removeChild(livePreview.firstElementChild);
+                }
+            };
+            img.src = res.live_preview;
+        }
     };
-
-    funProgress(id_task, 0);
-
-    if (gallery) {
-        funLivePreview(id_task, 0);
-    }
-
+    ws.onerror = function() {
+        ws.close();
+        removeProgressBar();
+    };
+    ws.onclose = function() {
+        removeProgressBar();
+    };
+    // No polling for live preview needed anymore
 }
